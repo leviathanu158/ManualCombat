@@ -1,0 +1,203 @@
+MANUAL COMBAT - HANDOVER NOTES (from the claude.ai chat, 2026-11-19 to 2026-11-20)
+==================================================================================
+Read this whole file before doing anything. It replaces the earlier conversation.
+
+1. THE PROJECT
+--------------
+Manual Combat: a code mod (C#/.NET) for MeitouClient, the open-source C#/.NET
+reimplementation of Kenshi (github.com/VlcekM/MeitouClient). Mount & Blade style
+melee: directional attacks aimed by mouse flick, hold-to-block, parries, feints,
+combos, clashing, chambering, hyper armor, manual crossbows. Built to work with
+PZA's "WASD & Controller Support" mod (github.com/PZA-Mods/PZAMeitouWASDController).
+License GPLv3 (same as Meitou and PZA's mod). Current version: 0.9.0.
+
+2. THE USER (Leviathanu) AND HOW TO WORK WITH HIM
+-------------------------------------------------
+- No coding knowledge. Claude writes ALL code; he tests in-game and gives feedback.
+- Explain things in plain words. He decides design; ask him on real design choices,
+  otherwise pick sensible defaults and say what you picked.
+- Keep replies compact. He prefers short feature lists.
+- Standing rules he set:
+  * meitou.json gameVersion must be ">=0.22.2" with NO upper cap (never "<0.23.0").
+    "If it breaks after an update we can just fix it."
+  * Only use Meitou information that is current (he said: nothing more than a week
+    old). Always read the Meitou source matching his installed version.
+  * Don't write into his Meitou install folders unasked (earlier he wanted zips;
+    now in Claude Code, editing the project folder is fine).
+- He runs: Windows, Meitou 0.22.2-nightly.20261119.2 (Vulkan), .NET SDK 11.0.100,
+  a large mod list incl. animation mods: Great Anims Mod (2725549481), GROUNDED2
+  (3289699139), More Combat Animation (1691422256). With his full mod list, all
+  weapons swing from all four directions.
+- Version bumps: bump meitou.json "version" AND ManualCombat.csproj <Version> and
+  the README "(vX.Y.Z)" every build.
+
+3. PATHS ON HIS PC
+------------------
+- Meitou install:   C:\Kenshi_Meitou  (versions\0.22.2-nightly.20261119.2\)
+- Game log:         C:\Kenshi_Meitou\versions\0.22.2-nightly.20261119.2\log.txt
+                    (mod lines start "mod       manualcombat:"; a session starts at
+                    the last "manualcombat: ready")
+- Kenshi:           C:\Steam Games\steamapps\common\Kenshi  (mods install to Kenshi\mods\ManualCombat)
+- Workshop mods:    C:\Steam Games\steamapps\workshop\content\233860
+- Launcher config:  %LOCALAPPDATA%\Meitou\launcher.json (InstallFolder, KenshiPath)
+- Meitou saves:     %LOCALAPPDATA%\Meitou\save\   (test save to be named "mctest")
+- Test scripts:     C:\Kenshi_Meitou\test\  (start-test-game.bat, check-channel.bat)
+- Test control dir: C:\Kenshi_Meitou\ctl\
+- meitou-tools.exe is in the Meitou version folder (probe, mod-check...).
+
+4. BUILDING
+-----------
+build.bat -> build.ps1: finds the .NET SDK, reads launcher.json, finds
+versions\*0.22.2-nightly.20261119*\MeitouClient.dll (update this pattern when he
+moves to a newer Meitou), builds net11.0 (fallback net10.0), stages out\ManualCombat
+(dll, meitou.json, empty ManualCombat.mod) and installs to Kenshi\mods\ManualCombat.
+References MeitouClient, Meitou.Simulation, Meitou.Core, Meitou.Data, 0Harmony
+(Private=false). Before handing over a build: brace/paren balance, check every
+reflected name/signature against Meitou's source for his version, avoid duplicate
+static field names (that bit us twice), avoid C# collection expressions in
+ternaries ("cond ? [] : x") and `is var (a,b)` on nullable tuples.
+
+5. ARCHITECTURE (src/)
+----------------------
+- ManualCombatMod.cs   Initialize: settings, key actions, AddSystem (after
+                       StandardParts.Combat), AddCombatMove, Harmony patches.
+                       Notify (crosshair messages), Log, rate-limited LogException.
+- ManualCombatSystem.cs ITickSystem + IStateHashed + ICombatHitFilter. All world
+                       changes via SimCommands handled in Inputs; writes in Schedule
+                       (runs after combat's Schedule, writes CombatSystem._write);
+                       ALL state hashed (determinism / future multiplayer).
+                       Combos, clash (+crush-through), chamber (HitLanding), hyper
+                       armor poise, crossbow state, held guard, feints, leave fight.
+- CombatPatches.cs     Reflection-by-name into Meitou internals (mod turns itself
+                       off if anything is missing). Patches: StartAttack,
+                       TechniqueChooser.ChooseAttack (direction filter), ChooseDefence,
+                       StartDefence, ApplyBlocked (parry -> Stagger), HasInitiative,
+                       CombatSteering.Velocity (WASD footwork), MayJoin/HasSlot,
+                       ReactionEnds (held block), PlayRate (combo speed), Aim/Reload/
+                       ImmediateThreat/ChooseMode (crossbow), ApplyFire/LineOfFire
+                       (bolt along the crosshair ray), Stagger (hyper armor).
+- InputWatch.cs        Input side (partial class). Mouse flick aim, PlayerInterface
+                       MouseDown/MouseUp prefixes (LMB attack = game Select button,
+                       RMB block = Command button; only in fights, not over HUD),
+                       Resolve postfix (priority First, before PZA), auto-bind first
+                       selected character, PZA WASD check (reflection:
+                       PZA.WASDControl.Meitou.Driver.On), Alt handling, pause flag.
+- TestChannel.cs       File-driven test input (see section 9).
+- FightHold.cs         CommandQueue.TakeDue postfix: drops MoveOrder/StopCommand that
+                       name ONLY the manual character while it fights (PZA's WASD
+                       sends move orders, and in Kenshi a move order ends a fight).
+- Hud.cs               DrawInterface prefix (arrows, crossbow reticle: under the UI)
+                       and postfix (fight hint top-right above PZA's menu, message
+                       line), red outline on locked target (GameLoop.Outline).
+- Targets.cs           Enemy picking (crosshair cone 35 deg, reach).
+- Commands.cs          SimCommand records (ManualControl/Attack/Block/Move/Dodge/
+                       Target/Leave/Swap/Shot/Reload). Attack/Block carry InPause.
+- ManualCombatSettings.cs  All settings (Settings > Mods).
+
+Key Kenshi facts: blow direction tags are DEFENDER-relative (1 overhead, 2 left,
+3 right, 4 thrust); the mod mirrors L/R (MirrorAttacks). Vanilla weapons lack many
+directions; animation mods add them. Initiative: loser of a roll yields 0.5 s,
+Kenshi starts the yield when the winner's block ends. HasSlot gives a target only 1
+attack slot while it swings. Hit stagger = CombatSystem.Stagger.
+
+6. FEATURES AND CURRENT DEFAULTS (0.9.0)
+----------------------------------------
+Controls in a fight: LMB attack, RMB hold block, mouse flick aim (left/right/up=
+overhead/down=thrust, gold arrow), M4 dodge (anytime), M5 switch target, U leave
+fight, O manual combat on/off, X swap crossbow/melee, WASD footwork, Alt+RMB = the
+game's plain right click (open/loot/talk/orders). Outside fights everything normal.
+Manual combat only works while PZA's WASD is on (else Kenshi's own fighting).
+- Swing anytime (even out of reach, whiffs); attack hits the enemy at the crosshair.
+- Block held indefinitely; guard faces aim; in crowds (>=3 attackers) guard turns
+  to each swing but still needs RMB held.
+- Parry (block press within 0.3 s of the hit) staggers the attacker; next swing
+  faster (riposte x1.35 within 1.5 s).
+- Feints: cancel only in first 50% of wind-up; 0.2 s recovery lock; 0.3 s lockout.
+- Combos: after YOUR HIT, attack from a DIFFERENT side 0.05-0.25 s after the hit:
+  swing cut, post-hit pause skipped, next swing +10% speed. MAX 2 SWINGS (one
+  cut-in). Then 0.8 s rest before the next ordinary swing (block/dodge free).
+- Clashing: both swings from the SAME side (equal technique blow tags) landing
+  within 0.12 s: both stop, sparks + parry sound. Only you and ONE enemy.
+  Crush-through: power = Strength + weapon skill + 2*weapon weight (cap 40);
+  chance = (strong-weak)/(strong+weak)*1.5, max 90%; works both ways.
+- Chambering: attack from the SAME side as an incoming blow, pressed within 0.2 s
+  before it lands: their blow misses, your swing continues. Parry sound.
+- Hyper armor: ONLY WHILE SWINGING (setting); poise = floor(Toughness/40 * scale)
+  (0 below 40, 2 at 80); light hit 1, heavy 2; refill after 5 s without a hit;
+  0.5 s grace after any stagger (no stun-locks).
+- Fair enemy pacing (manual combat only): enemies keep turn-taking but a lost
+  roll's yield is capped at 0.5 s (no stretch while you hold block); max 2 enemies
+  mid-swing at you at once (setting 1-6).
+- Pause: presses made while paused can't parry/chamber/combo (test channel exempt).
+- Crossbow: reticle (dot + spread ring from Crossbows/Perception x Spread setting),
+  LMB fires along the crosshair ray (bolt redirected in ApplyFire, deterministic
+  roll from seed + bolt id), LMB on empty reloads, hold RMB steadies (to 35% over
+  1 s), optional unbound "Reload crossbow" key. No zoom yet (he said not yet).
+- Weapon lacking the aimed direction: swings another side + message "No Attack For
+  That Direction" (temporary; he rejected filtering multi-hit katana moves).
+- Arrows faint (opacity 0.45) and drawn under the UI; fight hint top-right.
+- Log details setting: default OFF (it caused stutters).
+
+7. DECISIONS / THINGS HE REJECTED (don't re-propose)
+----------------------------------------------------
+- U as Kenshi Passive stance (others pull you back in) and a mod "disengaged" mode
+  (abusable) were rejected. The interaction fix chosen: Alt + right click.
+- Filtering katana multi-hit moves or refusing to swing when a direction is missing:
+  rejected.
+- Combos x3 / chain-on-any-swing: too strong; now 2 swings + rest.
+- Hyper armor at any time with big pools: too strong.
+- "Enemies never wait": too aggressive (he also had game attack slots at 5;
+  normal is 3).
+- Melee-to-melee weapon swap: deferred (no simple inventory command).
+
+8. INVESTIGATIONS ALREADY SETTLED
+---------------------------------
+- Hub Ninja Guards staring at the player after attacking a Drifter: NOT the mod.
+  Reproduced with the mod removed and with manual combat off. Meitou's combat target
+  chooser can't pick a "trouble maker" who isn't attacking the guard or an enemy
+  faction. He reported it to the Meitou developer.
+- Odd idle pose (left arm stuck forward) after a fight: unconfirmed; suspects the
+  held-block reaction or crossbow pose surviving the fight. Needs a log with Log
+  details on.
+- Combo/attack timing feel and group-fight difficulty: tuned as in section 6.
+
+9. TESTING SETUP (working, tested 2026-11-20)
+---------------------------------------------
+- His Meitou build has the agent channel (--control-dir) but NOT --headless: test
+  runs open a normal window, which must stay visible (hidden/minimized = loading
+  stalls).
+- C:\Kenshi_Meitou\test\start-test-game.bat sets KENSHI_PATH and
+  MANUALCOMBAT_TEST_DIR=C:\Kenshi_Meitou\ctl, cd's to the version folder and starts
+  MeitouClient.exe --windowed --load %LOCALAPPDATA%\Meitou\save\mctest (or
+  --continue) --control-dir C:\Kenshi_Meitou\ctl. Load takes ~4-5 min.
+- Agent channel: write "<id> <command>" to ctl\cmd (atomic: temp file + rename),
+  read JSON lines from ctl\out (skip "event" lines). Useful: state, observe --brief,
+  select, spawn-at <x> <z> [record] --aggro, order attack <id>, pause, step <n>,
+  resume, heal, kill, tp, screenshot <abs png path>, quit. Full guide: Meitou's
+  docs/agent-playtest.md; "help" lists commands.
+- Mod test channel (src/TestChannel.cs): write lines to ctl\mc.cmd: aim <overhead|
+  left|right|thrust>, attack [dir], block on [dir] | block off, dodge, target, swap,
+  reload, leave, report. Results append to ctl\mc.out. Presses count as live even
+  when paused (so pause + step n can time parries/chambers/combos exactly).
+- mctest save: he is making it (character in a safe open spot, WASD ON, weapon).
+  Earlier run used "quicksave" (Zagan & Su) where WASD was OFF -> manual inactive.
+- Also available: meitou-tools probe (headless save inspection) and
+  meitou-tools mod-check <save> (runs code mods headless, compares state hashes:
+  determinism check for the mod).
+- Ideas he liked: automated scenario tests and fuzzing via the test channel.
+
+10. PZA COLLABORATION
+---------------------
+PZA plans to write an API in his WASD mod and patch Manual Combat to use it
+(replacing: reflection on Driver.On, FightHold dropping his move orders, Resolve
+priority First, Alt handling, CameraForward/crosshair reads). When his patched
+version comes back, IT becomes the base: read his API and build on it only.
+Controller support is his to figure out later.
+
+11. OPEN / NEXT
+---------------
+- First automated test once mctest exists (e.g. 3 bandits: max-2-swinging rule,
+  parry timing, clash, chamber, hyper armor, crossbow).
+- Possible later: crossbow zoom, melee weapon swap, handoff note for PZA, Steam
+  Workshop page (BBCode feature list was drafted; Meitou code mods may not ship as
+  normal Workshop mods - check with the community).

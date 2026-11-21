@@ -1,0 +1,285 @@
+// Manual Combat for Meitou. GPLv3 or later.
+// Mount & Blade's direction arrows, drawn round the centre of the screen (PZA's crosshair in its views) while the hand-fought character is in a fight:
+//   gold    the side your next swing goes (the aim)
+//   blue    the side your guard faces, while block is held
+//   red     the side the enemy's swing is coming from (pointing in)
+// Drawn after the game's interface each frame, in a postfix on GameLoop.DrawInterface (the Vulkan host; the same hook PZA's squad wheel uses),
+// with the game's own overlay triangles. Optional: if the hook is missing the mod works without arrows.
+using System.Numerics;
+using System.Reflection;
+using HarmonyLib;
+using Meitou.Game.Rendering.Overlays;
+
+namespace ManualCombat;
+
+public static class Hud
+{
+    // Published by ManualCombatSystem.Schedule each tick, read on the interface's thread.
+    static volatile bool s_inFight;
+    static volatile int s_incoming;
+
+    /// <summary>Whether the hand-fought character is in a fight now (the in-fight controls and the arrows).</summary>
+    public static bool InFight => s_inFight;
+
+    /// <summary>The locked-on target (none: Slot -1), packed as slot and generation for a lock-free read.</summary>
+    static long s_target = -1;
+
+    static volatile bool s_ranged;
+    static float s_spread;
+
+    /// <summary>Whether the hand-fought character has its crossbow out (left click shoots at the crosshair).</summary>
+    public static bool Ranged => s_ranged && s_inFight && ManualCombatMod.Settings.ManualCrossbow;
+
+    public static void Publish(bool inFight, int incomingSide, Meitou.Simulation.CharacterId target, bool ranged, float spread)
+    {
+        s_ranged = ranged;
+        Volatile.Write(ref s_spread, spread);
+        s_inFight = inFight;
+        s_incoming = incomingSide;
+        Interlocked.Exchange(ref s_target, target.IsNone ? -1 : (long)target.Slot << 32 | (uint)target.Generation);
+    }
+
+    static Meitou.Simulation.CharacterId? Target()
+    {
+        long t = Interlocked.Read(ref s_target);
+        return t < 0 ? null : new Meitou.Simulation.CharacterId((int)(t >> 32), (int)(uint)t);
+    }
+
+    static FieldInfo? s_overlay;
+
+    /// <summary>The line under the crosshair and when it was set (Environment.TickCount64); shown for <see cref="LineMs"/>, fading out.</summary>
+    static volatile string? s_line;
+    static long s_lineAt;
+    const long LineMs = 1400, FadeMs = 400;
+
+    /// <summary>Shows <paramref name="text"/> under the crosshair now, replacing the line before (interface thread).</summary>
+    public static void Show(string text)
+    {
+        s_lineAt = Environment.TickCount64;
+        s_line = text;
+    }
+    static readonly int[] Sides = [Dir.Left, Dir.Right, Dir.Overhead, Dir.Thrust];
+
+    static readonly Vector4 Gold = new(0.95f, 0.75f, 0.35f, 0.95f), Blue = new(0.55f, 0.78f, 1f, 0.95f), Red = new(0.95f, 0.22f, 0.15f, 0.95f),
+        Edge = new(0.05f, 0.03f, 0.02f, 0.8f), Slot = new(0.9f, 0.86f, 0.75f, 0.22f);
+
+    // The target outline: GameLoop.Outline sets the GPU's hover keys (the characters Kenshi's hover outline draws, by draw key and colour) each
+    // frame; a postfix adds the locked-on target in red.
+    static FieldInfo? s_loopHost, s_hostGpu, s_hoverKeys;
+    static MethodInfo? s_drawKey;
+    static readonly Vector4 TargetOutline = new(1f, 0.3f, 0.22f, 1f);
+
+    static string PatchOutline(Harmony h, Type loop)
+    {
+        var outline = AccessTools.Method(loop, "Outline");
+        s_loopHost = loop.GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            .FirstOrDefault(f => f.FieldType.FullName == "Meitou.Game.GameHost");
+        var hostType = s_loopHost?.FieldType;
+        s_hostGpu = hostType is null ? null : AccessTools.Field(hostType, "Gpu");
+        s_hoverKeys = s_hostGpu is null ? null : AccessTools.Field(s_hostGpu.FieldType, "HoverKeys");
+        s_drawKey = hostType is null ? null : AccessTools.Method(hostType, "DrawKey", [typeof(Meitou.Simulation.CharacterId)]);
+        if (outline is null || s_loopHost is null || s_hostGpu is null || s_hoverKeys is null || s_drawKey is null
+            || s_hoverKeys.FieldType != typeof(IReadOnlyList<(long, Vector4)>))
+            return "target outline unavailable in this Meitou version";
+        h.Patch(outline, postfix: new HarmonyMethod(AccessTools.Method(typeof(Hud), nameof(OutlinePostfix))));
+        return "patched GameLoop.Outline (target outline)";
+    }
+
+    static void OutlinePostfix(object __instance, string? takeFile)
+    {
+        try
+        {
+            if (takeFile is not null || !s_inFight || !InputWatch.Active || !ManualCombatMod.Settings.OutlineTarget) return;
+            if (Target() is not { } target) return;
+            var host = s_loopHost!.GetValue(__instance);
+            var gpu = host is null ? null : s_hostGpu!.GetValue(host);
+            if (gpu is null || s_hoverKeys!.GetValue(gpu) is not IReadOnlyList<(long, Vector4)> keys) return;
+            long key = (long)s_drawKey!.Invoke(host, [target])!;
+            var list = new List<(long, Vector4)>(keys.Count + 1);
+            foreach (var k in keys) if (k.Item1 != key) list.Add(k);
+            list.Add((key, TargetOutline));
+            s_hoverKeys.SetValue(gpu, list);
+        }
+        catch (Exception e)
+        {
+            ManualCombatMod.LogException("target outline", e);
+        }
+    }
+
+    public static string Patch(Harmony h)
+    {
+        var loop = AccessTools.TypeByName("Meitou.Game.Host.GameLoop");
+        var draw = loop is null ? null : AccessTools.Method(loop, "DrawInterface");
+        s_overlay = loop is null ? null : AccessTools.Field(loop, "_overlay");
+        if (draw is null || s_overlay is null || s_overlay.FieldType != typeof(DebugOverlay))
+            return "direction arrows unavailable in this Meitou version (GameLoop.DrawInterface not found)";
+        h.Patch(draw, prefix: new HarmonyMethod(AccessTools.Method(typeof(Hud), nameof(DrawInterfacePrefix))),
+            postfix: new HarmonyMethod(AccessTools.Method(typeof(Hud), nameof(DrawInterfacePostfix))));
+        return "patched GameLoop.DrawInterface (direction arrows); " + PatchOutline(h, loop!);
+    }
+
+    /// <summary>The overlay and frame size of a DrawInterface call, or null (no overlay, covered, not in a fight).</summary>
+    static (DebugOverlay O, int W, int H, float S, Vector2 C)? Frame(object loop, object[] args)
+    {
+        if (!s_inFight || !InputWatch.Active) return null;
+        if (args.Length > 1 && args[1] is true) return null;   // covered (loading)
+        if (s_overlay!.GetValue(loop) is not DebugOverlay o || args.Length == 0 || args[0] is not { } size) return null;
+        var t = size.GetType();
+        if (t.GetField("X")?.GetValue(size) is not int w || t.GetField("Y")?.GetValue(size) is not int h || w <= 0 || h <= 0) return null;
+        return (o, w, h, h / 1080f, new Vector2(w / 2f, h / 2f));   // the centre: PZA's crosshair in its views
+    }
+
+    /// <summary>The arrows, before the game's interface draws, so its windows and HUD cover them.</summary>
+    static void DrawInterfacePrefix(object __instance, object[] __args)
+    {
+        try
+        {
+            var settings = ManualCombatMod.Settings;
+            if (Frame(__instance, __args) is not { } frame) return;
+            var (o, w, hgt, s, c) = frame;
+            if (Ranged)
+            {
+                Reticle(o, w, hgt, s, c);
+                return;
+            }
+            if (!settings.Arrows) return;
+            float a = (float)Math.Clamp(settings.ArrowOpacity, 0.05, 1);
+
+            o.Flush(w, hgt);
+            foreach (int side in Sides) Arrow(o, c, side, s, 40, 9, 7, Fade(Slot, a), outward: true, edge: false);
+
+            int aim = InputWatch.AimNow;
+            if (aim != Dir.None) Arrow(o, c, aim, s, 40, 14, 10, Fade(InputWatch.Blocking ? Blue : Gold, a), outward: true, edge: true, a);
+
+            if (settings.ArrowIncoming && ScreenSide(s_incoming, settings.MirrorGuards) is { } incoming)
+                Arrow(o, c, incoming, s, 66, 14, 10, Fade(Red, a), outward: false, edge: true, a);
+            o.Flush(w, hgt);
+        }
+        catch (Exception e)
+        {
+            ManualCombatMod.LogException("direction arrows", e);
+        }
+    }
+
+    static readonly Vector4 ReticleInk = new(0.95f, 0.9f, 0.8f, 0.85f), ReticleRing = new(0.95f, 0.9f, 0.8f, 0.5f);
+
+    /// <summary>The crossbow's reticle: a dot at the crosshair and a ring as wide as the spread a bolt may stray by.</summary>
+    static void Reticle(DebugOverlay o, int w, int hgt, float s, Vector2 c)
+    {
+        float radius = 0;
+        float spread = Volatile.Read(ref s_spread);
+        if (spread > 0 && InputWatch.CrosshairRay() is { } ray)
+        {
+            var (origin, dir) = ray;
+            var strayed = Meitou.Simulation.Combat.RangedFormulas.Deviate(dir, spread, 0);
+            if (InputWatch.Project(origin + dir * 100) is { } a && InputWatch.Project(origin + strayed * 100) is { } b) radius = Vector2.Distance(a, b);
+        }
+        radius = Math.Clamp(radius, 0, hgt * 0.45f);
+
+        o.Flush(w, hgt);
+        float d = 2.2f * s;
+        o.Rect(c.X - d - 1, c.Y - d - 1, c.X + d + 1, c.Y + d + 1, Edge);
+        o.Rect(c.X - d, c.Y - d, c.X + d, c.Y + d, ReticleInk);
+        if (radius > d + 3)
+        {
+            const int n = 48;
+            for (int k = 0; k < n; k++)
+            {
+                float a0 = k * MathF.Tau / n, a1 = (k + 1) * MathF.Tau / n;
+                o.Line(c.X + radius * MathF.Cos(a0), c.Y + radius * MathF.Sin(a0), c.X + radius * MathF.Cos(a1), c.Y + radius * MathF.Sin(a1),
+                    Math.Max(1, 1.5f * s), ReticleRing);
+            }
+        }
+        o.Flush(w, hgt);
+    }
+
+    static Vector4 Fade(Vector4 colour, float a) => colour with { W = colour.W * a };
+
+    /// <summary>The fight-mode hint and the message line, after the interface (readable over it).</summary>
+    static void DrawInterfacePostfix(object __instance, object[] __args)
+    {
+        try
+        {
+            var settings = ManualCombatMod.Settings;
+            if (Frame(__instance, __args) is not { } frame) return;
+            var (o, w, hgt, s, c) = frame;
+            if (settings.HoldInFights && settings.FightHint) DrawHint(o, s, w, hgt, settings.HintTop);
+            DrawLine(o, c, s, w, hgt);
+        }
+        catch (Exception e)
+        {
+            ManualCombatMod.LogException("fight hint", e);
+        }
+    }
+
+    const string HintText = "Fight mode: W A S D step   U leaves the fight";
+    const string RangedHintText = "Crossbow: left click fires (reloads when empty)   hold right click steadies   X: melee";
+    static readonly Vector4 HintInk = new(0.86f, 0.82f, 0.72f, 0.85f);
+
+    /// <summary>The fight-mode hint: small, right-aligned at the top right, under PZA's WASD window and its tiny button.</summary>
+    static void DrawHint(DebugOverlay o, float s, int w, int hgt, int topAt1080)
+    {
+        string text = Ranged ? RangedHintText : HintText;
+        float scale = Math.Max(0.75f, 0.8f * s);
+        float width = o.MeasureText(text, scale);
+        float x = w - width - 18 * s, top = topAt1080 * s;
+        o.TextScaled(text, x + 1, top + 1, Edge, scale);
+        o.TextScaled(text, x, top, HintInk, scale);
+        o.Flush(w, hgt);
+    }
+
+    /// <summary>The message line, centred under the arrows, fading out at its end.</summary>
+    static void DrawLine(DebugOverlay o, Vector2 c, float s, int w, int hgt)
+    {
+        if (s_line is not { } line) return;
+        long age = Environment.TickCount64 - s_lineAt;
+        if (age > LineMs)
+        {
+            s_line = null;
+            return;
+        }
+        float alpha = age < LineMs - FadeMs ? 1 : (LineMs - age) / (float)FadeMs;
+        float scale = Math.Max(1, s);
+        float width = o.MeasureText(line, scale);
+        float x = c.X - width / 2, top = c.Y + 90 * s;
+        o.TextScaled(line, x + scale, top + scale, Edge with { W = 0.8f * alpha }, scale);
+        o.TextScaled(line, x, top, Gold with { W = alpha }, scale);
+        o.Flush(w, hgt);
+    }
+
+    /// <summary>Where on screen a blow code's arrow goes (left, right, top = overhead or upward, bottom = thrust); none from behind.</summary>
+    static int? ScreenSide(int blow, bool mirror) => blow switch
+    {
+        Dir.Left => mirror ? Dir.Right : Dir.Left,
+        Dir.Right => mirror ? Dir.Left : Dir.Right,
+        Dir.Overhead or Dir.Up => Dir.Overhead,
+        Dir.Thrust or 6 => Dir.Thrust,
+        _ => null,
+    };
+
+    /// <summary>A triangle on <paramref name="side"/> of <paramref name="c"/>, <paramref name="at"/> px out, pointing out or in (sizes at 1080p).</summary>
+    static void Arrow(DebugOverlay o, Vector2 c, int side, float s, float at, float length, float half, Vector4 colour, bool outward, bool edge,
+        float alpha = 1)
+    {
+        var d = side switch
+        {
+            Dir.Left => new Vector2(-1, 0),
+            Dir.Right => new Vector2(1, 0),
+            Dir.Overhead => new Vector2(0, -1),
+            _ => new Vector2(0, 1),
+        };
+        var across = new Vector2(-d.Y, d.X);
+        var near = c + d * (at * s);
+        var far = c + d * ((at + length) * s);
+        var (tip, baseMid) = outward ? (far, near) : (near, far);
+        var b1 = baseMid + across * (half * s);
+        var b2 = baseMid - across * (half * s);
+        if (edge)
+        {
+            float g = 2 * s;
+            var dir = Vector2.Normalize(tip - baseMid);
+            o.Triangle(tip + dir * g, b1 + across * g - dir * g, b2 - across * g - dir * g, Edge with { W = Edge.W * alpha });
+        }
+        o.Triangle(tip, b1, b2, colour);
+    }
+}

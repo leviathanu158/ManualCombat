@@ -1,0 +1,242 @@
+// Manual Combat for Meitou. GPLv3 or later.
+// The rows on Settings > Mods > Manual Combat. The page changes them on the interface's thread; ManualCombatSystem copies what the world needs
+// in its serial Inputs step each tick (docs/modding.md "Settings").
+using Meitou.Modding;
+
+namespace ManualCombat;
+
+public sealed class ManualCombatSettings
+{
+    public const string AimMouse = "Mouse flick", AimKeys = "Movement keys";
+
+    [Setting("Aim swings and guards with",
+        Hint = "Mouse flick: the last way you moved the mouse picks the side (left, right, up = overhead, down = thrust), as in Mount & Blade. "
+            + "Movement keys: hold A, D, W or S instead.",
+        Options = [AimMouse, AimKeys])]
+    public string AimWith { get; set; } = AimMouse;
+
+    [Setting("Mouse flick sensitivity", Min = 2, Max = 40, Step = 1,
+        Hint = "How far (in pixels) the mouse must move in an instant for a new side. Lower switches on smaller flicks.",
+        VisibleWhen = nameof(AimingWithMouse))]
+    public int FlickPixels { get; set; } = 4;
+
+    /// <summary>For VisibleWhen: the flick setting shows only while aiming with the mouse.</summary>
+    public bool AimingWithMouse => AimWith == AimMouse;
+
+    [Setting("Left/right click fight in a fight",
+        Hint = "On: while your character is in a fight, left click attacks and right click blocks (rebind under Controls). Clicks on windows and "
+            + "the HUD work as usual, and outside fights the mouse is normal. Press U to leave the fight and get the normal clicks back.")]
+    public bool InFightClicks { get; set; } = true;
+
+    [Setting("Direction arrows", Hint = "Mount & Blade's arrows round the crosshair in a fight: gold for your swing's side, blue for your guard. "
+        + "Drawn under the game's windows.")]
+    public bool Arrows { get; set; } = true;
+
+    [Setting("Arrow opacity", Min = 0.1, Max = 1, Step = 0.05, VisibleWhen = nameof(Arrows))]
+    public double ArrowOpacity { get; set; } = 0.45;
+
+    [Setting("Show the incoming swing's side", Hint = "A red arrow pointing in from the side the enemy's swing comes from.",
+        VisibleWhen = nameof(Arrows))]
+    public bool ArrowIncoming { get; set; } = true;
+
+    [Setting("Attack what you look at",
+        Hint = "An attack turns on the enemy in reach nearest the crosshair; and when your target is out of reach, on an enemy in reach in front.")]
+    public bool AutoRetarget { get; set; } = true;
+
+    [Setting("Swing even out of reach",
+        Hint = "On: a click always swings, the way you aimed; too far and you whiff (and Kenshi's longer pause after a miss leaves you open). "
+            + "Kenshi's limit on how many may attack one target at once does not hold you back. Off: the swing waits while you step in.")]
+    public bool SwingAnyway { get; set; } = true;
+
+    [Setting("Mirror attack sides",
+        Hint = "Kenshi names a swing by the side it lands on. On (as Mount & Blade): aiming right swings from your right. "
+            + "Turn off if a weapon's swings come out the wrong way round.")]
+    public bool MirrorAttacks { get; set; } = true;
+
+    [Setting("No falling dodges",
+        Hint = "Leave out Kenshi's dodges that throw you to the ground (\"Dodge back fall\" and \"Dodge back fly\") when another dodge is there.")]
+    public bool NoFallingDodges { get; set; } = true;
+
+    [Setting("W A S D footwork in fights",
+        Hint = "On: in a fight your hand-fought character steps with W A S D (facing its enemy) instead of walking away, which in Kenshi would end "
+            + "the fight. Press U to leave the fight. Off: W A S D walk as usual and end the fight.")]
+    public bool HoldInFights { get; set; } = true;
+
+    [Setting("Fight-mode hint", Hint = "A small line at the top right while you fight by hand: W A S D step, U leaves the fight.",
+        VisibleWhen = nameof(HoldInFights))]
+    public bool FightHint { get; set; } = true;
+
+    [Setting("Hint height (pixels from the top)", Min = 0, Max = 600, Step = 2,
+        Hint = "Where the fight-mode hint sits (at 1080p; it scales with the screen).", VisibleWhen = nameof(FightHint))]
+    public int HintTop { get; set; } = 84;
+
+    [Setting("Footwork speed", Min = 8, Max = 40, Step = 1,
+        Hint = "How fast your character steps in a fight (Kenshi's own footwork is 18).", VisibleWhen = nameof(HoldInFights))]
+    public double FootworkSpeed { get; set; } = 18;
+
+    [Setting("Close in by itself",
+        Hint = "On: with no key held your character keeps Kenshi's own footwork (it closes in and keeps its distance). Off: it stands still.",
+        VisibleWhen = nameof(HoldInFights))]
+    public bool AutoFootwork { get; set; } = false;
+
+    [Setting("Show the guard at once",
+        Hint = "Holding block raises the guard right away, even with no swing coming (the real block takes over when one comes).")]
+    public bool GuardPose { get; set; } = true;
+
+    [Setting("Directional blocking",
+        Hint = "On: the guard must face the swing's side (aimed like your swings), and only the matching side stops it. "
+            + "Off: the block button stops a swing from any side.")]
+    public bool DirectionalBlocking { get; set; } = false;
+
+    [Setting("Mirror left and right guards",
+        Hint = "Swap which side a left or right aim guards, if blocking left feels backwards.", VisibleWhen = nameof(DirectionalBlocking))]
+    public bool MirrorGuards { get; set; } = false;
+
+    [Setting("Parry", Hint = "A block pressed just before the swing lands staggers the attacker.")]
+    public bool Parry { get; set; } = true;
+
+    [Setting("Parry window (seconds)", Min = 0.05, Max = 0.6, Step = 0.05,
+        Hint = "How soon before the swing lands you must press block for a parry.", VisibleWhen = nameof(Parry))]
+    public double ParryWindow { get; set; } = 0.3;
+
+    [Setting("Attack buffer (seconds)", Min = 0.1, Max = 2, Step = 0.05,
+        Hint = "How long an attack press waits for the moment your character is able to swing. Short: a press either swings now or not at all. "
+            + "(Stepping in for an aimed swing out of reach gets up to 1.5 s.)")]
+    public double AttackBuffer { get; set; } = 0.4;
+
+    [Setting("Block and dodge cancel your swing (feint)",
+        Hint = "Pressing block or dodge early in your own swing gives it up, and shortens the pause after a swing, in which Kenshi lets a "
+            + "fighter neither attack nor defend. Late in the swing you are committed.")]
+    public bool CancelSwing { get; set; } = true;
+
+    [Setting("Feint window", Min = 0, Max = 1, Step = 0.05, SubGroup = "Feints",
+        Hint = "How far into your wind-up a block or dodge can still cancel the swing (0.5: the first half of the way to the blow).",
+        VisibleWhen = nameof(CancelSwing))]
+    public double FeintWindow { get; set; } = 0.5;
+
+    [Setting("Locked after your blow (seconds)", Min = 0, Max = 0.8, Step = 0.05, SubGroup = "Feints",
+        Hint = "After your swing's blow, this long passes before you can block or dodge.", VisibleWhen = nameof(CancelSwing))]
+    public double RecoveryLock { get; set; } = 0.2;
+
+    [Setting("Attack lockout after a feint (seconds)", Min = 0, Max = 1, Step = 0.05, SubGroup = "Feints",
+        Hint = "After you cancel a swing, your next attack waits this long, so feints are not free.", VisibleWhen = nameof(CancelSwing))]
+    public double FeintLockout { get; set; } = 0.3;
+
+    [Setting("Combos", SubGroup = "Combos and counters",
+        Hint = "A swing right after a parry comes out faster (a riposte), and attacking from another side at the right moment after a hit cuts straight into the next swing (a combo).")]
+    public bool Combos { get; set; } = true;
+
+    [Setting("Riposte speed", Min = 1, Max = 2, Step = 0.05, SubGroup = "Combos and counters", VisibleWhen = nameof(Combos),
+        Hint = "How much faster your first swing within 1.5 s of a parry plays.")]
+    public double RiposteSpeed { get; set; } = 1.35;
+
+    [Setting("Combo speed per step", Min = 0, Max = 0.6, Step = 0.02, SubGroup = "Combos and counters", VisibleWhen = nameof(Combos),
+        Hint = "How much faster the second swing of a combo is.")]
+    public double ChainSpeed { get; set; } = 0.1;
+
+    [Setting("Combo timing starts (seconds after the hit)", Min = 0, Max = 0.5, Step = 0.01, SubGroup = "Combos and counters",
+        VisibleWhen = nameof(Combos),
+        Hint = "A combo: after your swing hits, attack from a different side in this window and your swing is cut short, the pause after it "
+            + "skipped, and the next swing comes out at once (and faster). Too early or too late: a normal swing after the pause.")]
+    public double ComboFrom { get; set; } = 0.05;
+
+    [Setting("Combo timing length (seconds)", Min = 0.05, Max = 1, Step = 0.01, SubGroup = "Combos and counters", VisibleWhen = nameof(Combos))]
+    public double ComboLength { get; set; } = 0.2;
+
+    [Setting("Rest after a combo (seconds)", Min = 0, Max = 3, Step = 0.05, SubGroup = "Combos and counters", VisibleWhen = nameof(Combos),
+        Hint = "After a combo, your next ordinary swing waits this long after the combo's last swing ends (blocking and dodging stay free).")]
+    public double ComboRest { get; set; } = 0.8;
+
+    [Setting("Clashing", SubGroup = "Combos and counters",
+        Hint = "Your swing and an enemy's swing at you, both from the same side, landing at almost the same moment meet in the air: those two stop, sparks fly. In a group only that one enemy's swing stops.")]
+    public bool Clash { get; set; } = true;
+
+    [Setting("Clash window (seconds)", Min = 0.03, Max = 0.4, Step = 0.01, SubGroup = "Combos and counters", VisibleWhen = nameof(Clash))]
+    public double ClashWindow { get; set; } = 0.12;
+
+    [Setting("Crush through clashes", SubGroup = "Combos and counters", VisibleWhen = nameof(Clash),
+        Hint = "In a clash the stronger fighter may crush through and land the blow anyway: the chance grows with the gap in Strength, weapon "
+            + "skill and weapon weight between the two (enemies can crush through you too).")]
+    public bool ClashCrush { get; set; } = true;
+
+    [Setting("Crush-through chance scale", Min = 0, Max = 4, Step = 0.1, SubGroup = "Combos and counters", VisibleWhen = nameof(ClashCrush),
+        Hint = "1.5: a fighter twice as strong overall crushes through about half the time; at most 90%.")]
+    public double CrushScale { get; set; } = 1.5;
+
+    [Setting("Chambering", SubGroup = "Combos and counters",
+        Hint = "Attack from the same side as an enemy's blow just before it lands on you and your swing turns it aside while it goes on (their blow misses).")]
+    public bool Chamber { get; set; } = true;
+
+    [Setting("Chamber window (seconds)", Min = 0.05, Max = 0.5, Step = 0.01, SubGroup = "Combos and counters", VisibleWhen = nameof(Chamber))]
+    public double ChamberWindow { get; set; } = 0.2;
+
+    [Setting("Clash and chamber sounds", SubGroup = "Combos and counters",
+        Hint = "A clash or a chamber plays the game's parry sound.")]
+    public bool CounterSounds { get; set; } = true;
+
+    [Setting("Fair enemy pacing",
+        Hint = "Only in manual combat. Enemies keep Kenshi's turn-taking, but one that loses its turn waits only Kenshi's half second (holding a "
+            + "block no longer makes them stand and stare), and only so many swing at you at once.")]
+    public bool EnemiesDontWait { get; set; } = true;
+
+    [Setting("Enemies swinging at you at once", Min = 1, Max = 6, Step = 1, VisibleWhen = nameof(EnemiesDontWait),
+        Hint = "The most enemies whose swings at you are under way together; the rest wait their turn.")]
+    public int MaxSwingingAtYou { get; set; } = 2;
+
+    [Setting("Hyper armor", SubGroup = "Staggering",
+        Hint = "While you swing, your character may shrug off a hit that would stagger it (a light hit costs 1 poise, a heavy one 2), from a "
+            + "small poise pool that grows with Toughness and refills after a while without being hit. After a stagger, a short grace in which "
+            + "nothing staggers you again.")]
+    public bool HyperArmor { get; set; } = true;
+
+    [Setting("Only while swinging", SubGroup = "Staggering", VisibleWhen = nameof(HyperArmor),
+        Hint = "Poise only holds while you swing (hyper armor on attacks). Off: it holds at any time.")]
+    public bool ArmorSwingOnly { get; set; } = true;
+
+    [Setting("Poise scale", Min = 0, Max = 3, Step = 0.1, SubGroup = "Staggering", VisibleWhen = nameof(HyperArmor),
+        Hint = "Poise is 1 per 40 Toughness (0 below 40, 1 at 40, 2 at 80), times this.")]
+    public double PoiseScale { get; set; } = 1.0;
+
+    [Setting("Poise refill (seconds without a hit)", Min = 0.5, Max = 15, Step = 0.25, SubGroup = "Staggering", VisibleWhen = nameof(HyperArmor))]
+    public double PoiseRefill { get; set; } = 5;
+
+    [Setting("Grace after a stagger (seconds)", Min = 0, Max = 3, Step = 0.05, SubGroup = "Staggering", VisibleWhen = nameof(HyperArmor),
+        Hint = "Once a stagger ends, nothing staggers you again for this long: no stun-locks.")]
+    public double StaggerGrace { get; set; } = 0.5;
+
+    [Setting("Manual crossbow", SubGroup = "Crossbows",
+        Hint = "With a crossbow out in a fight: left click fires where the crosshair points (left click on an empty crossbow reloads), "
+            + "hold right click to steady the aim. X swaps between the crossbow and your melee weapon.")]
+    public bool ManualCrossbow { get; set; } = true;
+
+    [Setting("Spread", Min = 0, Max = 5, Step = 0.05, SubGroup = "Crossbows", VisibleWhen = nameof(ManualCrossbow),
+        Hint = "How far a bolt may stray from the crosshair, times the crossbow's own spread for your character's Crossbows and Perception skills "
+            + "(1 = Kenshi's; 0 = every bolt exactly at the dot). The circle round the dot shows it.")]
+    public double SpreadScale { get; set; } = 1.0;
+
+    [Setting("Steadied spread", Min = 0, Max = 1, Step = 0.05, SubGroup = "Crossbows", VisibleWhen = nameof(ManualCrossbow),
+        Hint = "The spread with right click held long enough, as a share of the normal spread.")]
+    public double SteadySpread { get; set; } = 0.35;
+
+    [Setting("Time to steady (seconds)", Min = 0.1, Max = 5, Step = 0.1, SubGroup = "Crossbows", VisibleWhen = nameof(ManualCrossbow))]
+    public double SteadyTime { get; set; } = 1.0;
+
+    [Setting("Auto-block from this many attackers", Min = 0, Max = 8, Step = 1,
+        Hint = "With at least this many enemies on you, your held guard turns to each swing by itself (you still hold block). "
+            + "0: never.")]
+    public int AutoBlockAttackers { get; set; } = 3;
+
+    [Setting("Outline your target", Hint = "Kenshi's hover outline, in red, on the enemy you are locked on to in a fight.")]
+    public bool OutlineTarget { get; set; } = true;
+
+    [Setting("Skip the initiative roll",
+        Hint = "Kenshi rolls dice between two fighters for who may swing first. On: your press always gets its swing, "
+            + "unless the enemy's swing at you is already on its way (then block!). Off: the dice decide, as in the game.")]
+    public bool SkipInitiative { get; set; } = true;
+
+    [Setting("On-screen messages", Hint = "Show 'Parry!', a target switch and similar briefly under the crosshair in a fight.")]
+    public bool Messages { get; set; } = true;
+
+    [Setting("Log details", Hint = "Write each manual attack, block and parry to log.txt (for testing).")]
+    public bool LogDetails { get; set; } = false;
+}

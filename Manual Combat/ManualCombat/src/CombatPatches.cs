@@ -205,6 +205,14 @@ public static class CombatPatches
             lines.Add("patched CombatSteering.Velocity (W A S D footwork)");
             h.Patch(s_steer, postfix: Hook(nameof(SteerPostfix)));
             lines.Add("patched PursuitSystem.Steer (footwork with the crossbow out)");
+            // Optional (only a look): without it the crossbow footwork slides the character in its aim pose.
+            if (AccessTools.Method(typeof(Meitou.Simulation.Movement.AnimationSystem), "TechniqueOf") is { } techniqueOf
+                && techniqueOf.ReturnType == typeof(ValueTuple<int, float>) && techniqueOf.GetParameters().Any(p => p.Name == "id"))
+            {
+                h.Patch(techniqueOf, postfix: Hook(nameof(TechniqueOfPostfix)));
+                lines.Add("patched AnimationSystem.TechniqueOf (walking with the crossbow out)");
+            }
+            else lines.Add("walking animation with the crossbow out unavailable in this Meitou version (AnimationSystem.TechniqueOf)");
             h.Patch(s_mayJoin, postfix: Hook(nameof(GatePostfix)));
             h.Patch(s_hasSlot, postfix: Hook(nameof(GatePostfix)));
             lines.Add("patched CombatSystem.MayJoin / HasSlot (swing anytime)");
@@ -355,6 +363,30 @@ public static class CombatPatches
         {
             ManualCombatMod.LogException("CombatSteering.Velocity prefix", e);
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Walking with the crossbow out: the crossbow's aim and reload poses are whole-body clips, which leave the legs no walk, so a character stepping
+    /// with W A S D slid along in its aim pose. While the keys push, the pose is left out and the fight's own walk plays; it comes back when the
+    /// character stands (a reload keeps counting meanwhile). From the simulation's own state (the footwork wanted), so it is the same everywhere.
+    /// </summary>
+    static void TechniqueOfPostfix(World world, Meitou.Simulation.CharacterId id, ref ValueTuple<int, float> __result)
+    {
+        try
+        {
+            if (__result.Item1 < 0) return;
+            var mc = ManualCombatSystem.For(world);
+            if (mc is null || !mc.Footwork || mc.MoveIntent == Vector2.Zero || !mc.Controls(world, id.Slot)) return;
+            var read = s_read(mc.Combat);
+            if ((uint)id.Slot >= (uint)read.Length) return;
+            ref readonly var s = ref read[id.Slot];
+            if (!s.Ranged || s.AttackTech >= 0 || s.ReactTech >= 0) return;   // only the aim or reload pose, never a swing, block or dodge
+            __result = (-1, 0);
+        }
+        catch (Exception e)
+        {
+            ManualCombatMod.LogException("AnimationSystem.TechniqueOf postfix", e);
         }
     }
 
@@ -821,8 +853,15 @@ public static class CombatPatches
         try
         {
             var mc = ManualCombatSystem.For(world);
-            if (mc is null || !mc.HyperArmorOn || !mc.Controls(world, d)) return true;
+            if (mc is null || !mc.Controls(world, d)) return true;
             if (dSlot.TargetSlot < 0 && !dc.InCombat) return true;   // outside a fight: Kenshi's own
+            // A chamber that landed: no stagger while the chambering swing goes on.
+            if (now < mc.ChamberSafeUntil && dSlot.AttackTech >= 0)
+            {
+                mc.Detail("stagger shrugged off (the chambering swing)");
+                return false;
+            }
+            if (!mc.HyperArmorOn) return true;
             return !mc.ResistStagger(dc, heavy, now, dSlot.AttackTech >= 0);
         }
         catch (Exception e)

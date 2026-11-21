@@ -422,7 +422,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         bool fighting = s.TargetSlot >= 0;
         FightHold.Publish(world.Commands, Slot, Generation, fighting && !leaving, leaving);
         Hud.Publish(fighting && !leaving, IncomingSide(world, now, fighting),
-            fighting ? new CharacterId(s.TargetSlot, s.TargetGeneration) : CharacterId.None, s.Ranged, ShotSpread);
+            fighting ? new CharacterId(s.TargetSlot, s.TargetGeneration) : CharacterId.None, s.Ranged, ShotSpread,
+            s.Loaded, world.Characters.Cold(Slot)?.Fighter?.Crossbow?.NumShots ?? 0, _steadyLevel);
 
         // The target button: the enemy nearest the camera's aim.
         if (_targetLook is { } look)
@@ -803,6 +804,11 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         Detail($"reloaded out of a fight: {s.Loaded} loaded");
     }
 
+    /// <summary>The tick the chambering swing ends: no stagger before it (a chamber that lands is not punished).</summary>
+    public long ChamberSafeUntil { get; private set; } = long.MinValue;
+    /// <summary>The enemy whose swing was chambered, and that swing's sequence (its later blows are turned aside too).</summary>
+    int _chamberedBy = -1, _chamberedSeq = -1;
+
     /// <summary>The widest angle off the character's heading a chambered attacker may stand at (120 degrees: front, sides, a little behind).</summary>
     const float ChamberArcDegrees = 120;
     static readonly float ChamberArcCos = MathF.Cos(ChamberArcDegrees * MathF.PI / 180);
@@ -826,12 +832,21 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         }
 
         if (!ChamberOn || hit.Victim.Slot != Slot || hit.Victim.Generation != Generation) return;
-        if (_attackPaused || hit.Tick - _attackPressTick > _chamberTicks || hit.Tick < _attackPressTick) return;
         var slots = CombatPatches.WriteSlots(Combat);
         int a = hit.Attacker.Slot;
         if ((uint)Slot >= (uint)slots.Length || (uint)a >= (uint)slots.Length) return;
         ref var me = ref slots[Slot];
         ref var them = ref slots[a];
+
+        // The rest of a chambered swing (a move of two blows) is turned aside too, while the chambering swing goes on.
+        if (a == _chamberedBy && them.AttackSeq == _chamberedSeq && hit.Tick < ChamberSafeUntil)
+        {
+            hit.Cancelled = true;
+            Detail($"chamber: {world.Characters.Cold(a)?.Name}'s next blow of the same swing turned aside too");
+            return;
+        }
+
+        if (_attackPaused || hit.Tick - _attackPressTick > _chamberTicks || hit.Tick < _attackPressTick) return;
         if (me.AttackTech < 0 || them.AttackTech < 0) return;
         if (CombatPatches.Technique(Combat, me.AttackTech) is not { } mine || CombatPatches.Technique(Combat, them.AttackTech) is not { } theirs) return;
         // Only a swing from the same direction as the blow turns it aside, aimed as a block against it is (a thrust by a thrust, a blow at your left by
@@ -866,6 +881,10 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         hit.Cancelled = true;
         _chambers++;
         _attackPressTick = long.MinValue / 2;   // one chamber per press
+        // A chamber that lands keeps the swing safe: no stagger until it ends (StaggerPrefix), and the same enemy swing's later blows miss.
+        _chamberedBy = a;
+        _chamberedSeq = them.AttackSeq;
+        ChamberSafeUntil = Math.Max(me.AttackEnd, hit.Tick + 1);
         if (CounterSounds) world.PostSound("Impact", new CharacterId(Slot, Generation), "Impacts", "Parry");
         Detail($"CHAMBER: {world.Characters.Cold(a)?.Name}'s blow ({Dir.Name(theirSide)}) turned aside (chambers this world: {_chambers})");
         ManualCombatMod.Notify("Chamber!");
@@ -1171,6 +1190,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         _rollHolds = false;
         Array.Fill(_waitSince, -1);
         Array.Fill(_waitLast, -1);
+        ChamberSafeUntil = long.MinValue;
+        _chamberedBy = _chamberedSeq = -1;
     }
 
     void CopySettings(World world)
@@ -1306,6 +1327,9 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         hasher.Add(_retargetTick);
         hasher.Add(Mirror);
         hasher.Add(_beatenScale);
+        hasher.Add(ChamberSafeUntil);
+        hasher.Add(_chamberedBy);
+        hasher.Add(_chamberedSeq);
         hasher.Add(_rollAttacker);
         hasher.Add(_rollSeq);
         hasher.Add(_rollBlow);

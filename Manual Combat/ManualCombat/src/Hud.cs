@@ -25,15 +25,23 @@ public static class Hud
     static long s_target = -1;
 
     static volatile bool s_ranged;
-    static float s_spread;
+    static float s_spread, s_steady;
+    static volatile int s_loaded, s_shots;
 
     /// <summary>Whether the hand-fought character has its crossbow out (left click shoots at the crosshair).</summary>
     public static bool Ranged => s_ranged && s_inFight && ManualCombatMod.Settings.ManualCrossbow;
 
-    public static void Publish(bool inFight, int incomingSide, Meitou.Simulation.CharacterId target, bool ranged, float spread)
+    /// <summary>How steadied the crossbow's aim is (0 to 1; 0 without the crossbow out): the zoom follows it.</summary>
+    public static float Steady => Ranged ? Volatile.Read(ref s_steady) : 0;
+
+    public static void Publish(bool inFight, int incomingSide, Meitou.Simulation.CharacterId target, bool ranged, float spread,
+        int loaded = 0, int shots = 0, float steady = 0)
     {
         s_ranged = ranged;
         Volatile.Write(ref s_spread, spread);
+        Volatile.Write(ref s_steady, steady);
+        s_loaded = loaded;
+        s_shots = shots;
         s_inFight = inFight;
         s_incoming = incomingSide;
         Interlocked.Exchange(ref s_target, target.IsNone ? -1 : (long)target.Slot << 32 | (uint)target.Generation);
@@ -180,6 +188,18 @@ public static class Hud
         float d = 2.2f * s;
         o.Rect(c.X - d - 1, c.Y - d - 1, c.X + d + 1, c.Y + d + 1, Edge);
         o.Rect(c.X - d, c.Y - d, c.X + d, c.Y + d, ReticleInk);
+
+        // Loaded: "1:1" (bolts loaded : bolts a reload holds) under the dot; red when empty.
+        int shots = s_shots;
+        if (shots > 0)
+        {
+            int loaded = s_loaded;
+            string text = $"{loaded}:{shots}";
+            float scale = Math.Max(1, 1.1f * s);
+            float x = c.X - o.MeasureText(text, scale) / 2, top = c.Y + 24 * s;
+            o.TextScaled(text, x + scale, top + scale, Edge, scale);
+            o.TextScaled(text, x, top, loaded > 0 ? ReticleInk : Red, scale);
+        }
         if (radius > d + 3)
         {
             const int n = 48;

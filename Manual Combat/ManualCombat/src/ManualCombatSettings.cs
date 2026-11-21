@@ -216,7 +216,7 @@ public sealed class ManualCombatSettings
     [Setting("Spread", Min = 0, Max = 5, Step = 0.05, SubGroup = "Crossbows", VisibleWhen = nameof(ManualCrossbow),
         Hint = "How far a bolt may stray from the crosshair, times the crossbow's own spread for your character's Crossbows and Perception skills "
             + "(1 = Kenshi's; 0 = every bolt exactly at the dot). The circle round the dot shows it.")]
-    public double SpreadScale { get; set; } = 1.0;
+    public double SpreadScale { get; set; } = 1.25;
 
     [Setting("Steadied spread", Min = 0, Max = 1, Step = 0.05, SubGroup = "Crossbows", VisibleWhen = nameof(ManualCrossbow),
         Hint = "The spread with right click held long enough, as a share of the normal spread.")]
@@ -224,6 +224,11 @@ public sealed class ManualCombatSettings
 
     [Setting("Time to steady (seconds)", Min = 0.1, Max = 5, Step = 0.1, SubGroup = "Crossbows", VisibleWhen = nameof(ManualCrossbow))]
     public double SteadyTime { get; set; } = 1.0;
+
+    [Setting("Zoom when steadied", Min = 0.25, Max = 1, Step = 0.05, SubGroup = "Crossbows", VisibleWhen = nameof(ManualCrossbow),
+        Hint = "In PZA's over-the-shoulder or first-person view, holding right click with the crossbow out narrows the view to this share of its "
+            + "width as the aim steadies (0.5: twice as close). 1: no zoom.")]
+    public double CrossbowZoom { get; set; } = 0.5;
 
     [Setting("Auto-block from this many attackers", Min = 0, Max = 8, Step = 1,
         Hint = "With at least this many enemies on you, your held guard turns to each swing by itself (you still hold block). "

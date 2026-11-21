@@ -178,12 +178,14 @@ public sealed class ManualCombatSettings
 
     [Setting("Fair enemy pacing",
         Hint = "Only in manual combat. Enemies keep Kenshi's turn-taking, but one that loses its turn waits only Kenshi's half second (holding a "
-            + "block no longer makes them stand and stare), and only so many swing at you at once.")]
+            + "block no longer makes them stand and stare), and never longer than the longest wait below. How many may swing at you at once is "
+            + "Meitou's attack slots setting.")]
     public bool EnemiesDontWait { get; set; } = true;
 
-    [Setting("Enemies swinging at you at once", Min = 1, Max = 6, Step = 1, VisibleWhen = nameof(EnemiesDontWait),
-        Hint = "The most enemies whose swings at you are under way together; the rest wait their turn.")]
-    public int MaxSwingingAtYou { get; set; } = 2;
+    [Setting("Longest enemy wait (seconds)", Min = 0, Max = 5, Step = 0.25, VisibleWhen = nameof(EnemiesDontWait),
+        Hint = "Kenshi's initiative roll favours the stronger fighter, and your character never swings unless you attack, so a much weaker "
+            + "enemy could stand in front of you for many seconds. One that has kept losing the roll this long swings anyway. 0: no limit.")]
+    public double LongestEnemyWait { get; set; } = 2.5;
 
     [Setting("Hyper armor", SubGroup = "Staggering",
         Hint = "While you swing, your character may shrug off a hit that would stagger it (a light hit costs 1 poise, a heavy one 2), from a "

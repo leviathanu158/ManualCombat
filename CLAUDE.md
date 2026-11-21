@@ -16,6 +16,7 @@ Full background is in `ManualCombat-handover.txt` (the original claude.ai handov
 - Editing this project folder is fine. **Don't write into his Meitou install folders (C:\Kenshi_Meitou\...) unless he asks.** build.bat installing into Kenshi\mods\ManualCombat is expected.
 
 ## Standing rules
+- Everything the mod changes applies **only to the hand-fought character** (first selected) and **only while manual combat (O) and PZA's WASD are both on**. With either off, plain Kenshi/Meitou behaviour takes over for everyone. Every new feature must check `ManualCombatSystem.Controls` (the bound character), which is released when either goes off.
 - `meitou.json` gameVersion must be `">=0.22.2"` with **no upper cap** (never `"<0.23.0"`).
 - Use only current Meitou information (no more than a week old). **Always read the Meitou source that matches his installed version** before using or reflecting into any Meitou API.
 - **Version bump on every build** he gets: meitou.json `"version"`, ManualCombat.csproj `<Version>`, and the README `(vX.Y.Z)`.
@@ -74,12 +75,13 @@ Kenshi facts:
   - Both swings come from the same side and land within 0.12 s; only you and one enemy.
   - Crush-through power is Str + skill + 2×weight (cap 40).
   - Chance is (s−w)/(s+w)×1.5 (max 90%).
-- **Chamber**: attack from the same side within 0.2 s before an incoming blow lands.
+- **Chamber**: attack within the chamber window before an incoming blow lands, from the same direction, aimed as a block against that blow would be (0.9.9: was the mirrored attack side, wrong for left/right), and the weapon must really swing that way.
 - **Hyper armor**:
   - Only while swinging. Poise = floor(Toughness/40 × scale).
   - A light hit costs 1 poise and a heavy hit 2. Poise refills after 5 s without a hit.
   - 0.5 s grace after any stagger.
-- **Enemy pacing**: a lost roll's yield is capped at 0.5 s, and at most 2 enemies swing at you at once (setting 1–6).
+- **Enemy pacing**: a lost roll's yield is capped at 0.5 s, and an enemy that keeps losing Kenshi's initiative roll swings anyway after the Longest enemy wait (default 2.5 s, his choice; added 0.9.9). How many swing at you at once is **Meitou's attack slots** setting (his decision; the mod's own cap was removed in 0.9.9).
+- **Crossbow footwork and reload (0.9.9)**: W A S D step the character with the crossbow out (Meitou steers no crossbowman; PursuitSystem.Steer postfix + Velocity prefix); no key = stand. Out of fights an empty crossbow reloads by itself on the fight state's own ReloadLeft timer (his choice: automatic), no animation.
 - **Pause**: presses made while paused can't parry, chamber or combo (the test channel is exempt).
 - **Crossbow** (needs PZA's 3rd-person shoulder view, Z: in the Normal view the screen centre sits on your own character):
   - Reticle with a spread ring; LMB fires along the crosshair ray, with a deterministic roll.
@@ -127,6 +129,6 @@ Kenshi facts:
 PZA plans an API in his WASD mod and will patch Manual Combat to use it. It will replace the Driver.On reflection, FightHold, Resolve priority, Alt handling and the camera/crosshair reads. **When his patched version comes back, it becomes the base: read his API and build on it.** Controller support is his.
 
 ## Open / next
-- First automated test once mctest exists, e.g. 3 bandits. It should cover the max-2-swinging rule, parry timing, clash, chamber, hyper armor and crossbow. He liked scenario tests and fuzzing via the test channel.
+- Tested 2026-11-20/21 through the test channel: blocks, parries, combos, clash and crush-through, chamber, hyper armor, dodge, crossbow (swap, reload, shot, steadying). He liked scenario tests and fuzzing via the test channel.
 - After testing: one commit that makes the tested settings the mod's defaults, so it plays well out of the box. His tuned values so far: Chamber window 0.5, Stagger grace 0.5, Hint height 44 (that last one was lost with the stray test settings file).
 - Later: crossbow zoom, melee weapon swap, a handoff note for PZA, and a Steam Workshop page. Check whether Meitou code mods can ship as Workshop mods.

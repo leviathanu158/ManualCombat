@@ -1,4 +1,4 @@
-# Manual Combat for Meitou (v0.9.8)
+# Manual Combat for Meitou (v0.9.11)
 
 Fight with your own hands, Mount & Blade style. Built for Meitou **0.22.2-nightly.20261121**. **Needs PZA's WASD & Controller Support**: manual combat is only on while its WASD movement is on (with WASD off, or without PZA's mod, your characters fight the normal Kenshi way).
 
@@ -49,11 +49,11 @@ Start fights as usual: right-click an enemy (or use PZA's attack button), or get
 - **Riposte:** your first swing within 1.5 s of a parry plays faster.
 - **Combos:** when your swing hits, attack from a *different side* in the short timing just after the hit (0.05 s to 0.25 s after it, by default). Your swing is cut right there, Kenshi's pause after a hit is skipped, and the next swing comes out at once, a little faster. A combo is two swings at most; after it your next ordinary swing waits a short rest (0.8 s by default) once the combo ends, while blocking and dodging stay free. Too early or too late, or from the same side, and it's a normal swing after the pause.
 - **Clashing:** if your swing and an enemy's swing at you come from the **same side** (both from their right, both overhead...) and land at almost the same moment, they meet in the air. Your swing and that one enemy's stop, sparks fly and the parry sound plays; in a group fight nobody else's swing is touched. The stronger fighter (Strength, weapon skill and weapon weight) may **crush through** and land the blow anyway: "Crushed through!" when it's you, "Overpowered!" when it's them.
-- **Chambering:** attack from the **same side** as an enemy's blow just before it lands and your swing turns it aside while it carries on. It works against enemies in front of you or at your side, not from well behind. Their blow misses (and they get Kenshi's pause after a miss), with the parry sound.
+- **Chambering:** attack from the **same direction** as an enemy's blow just before it lands, aimed as you would block it (a thrust against a thrust, a swing from your left against a blow at your left), and your swing turns it aside while it carries on. Your weapon has to really swing that way. It works against enemies in front of you or at your side, not from well behind. Their blow misses (and they get Kenshi's pause after a miss), with the parry sound.
 
 ## Fair enemy pacing (manual combat only)
 
-Kenshi's fighters take turns: one that loses the initiative roll waits half a second for the winner to swing. Kenshi starts that wait when the winner's block ends, and your held block never ends, so enemies used to stand and stare while you blocked. Now their wait is always Kenshi's half second, and at most 2 enemies swing at you at once (the rest wait for one to finish). Settings: **Fair enemy pacing**, **Enemies swinging at you at once**.
+Kenshi's fighters take turns: one that loses the initiative roll waits half a second for the winner to swing. Kenshi starts that wait when the winner's block ends, and your held block never ends, so enemies used to stand and stare while you blocked. Now their wait is always Kenshi's half second. And since your character never takes its turn by itself, a much weaker enemy could lose the roll again and again and just stand there: one that has kept losing for 2.5 s swings anyway. How many enemies may swing at you at once is Meitou's own **attack slots** setting. Settings: **Fair enemy pacing**, **Longest enemy wait**.
 
 ## Pausing
 
@@ -70,6 +70,8 @@ When your weapon has no swing at all from the side you aim, it swings from anoth
 ## Crossbows
 
 With your crossbow out in a fight a reticle shows: a dot at the crosshair and a ring for how far a bolt may stray, from your character's Crossbows and Perception skills (the **Spread** setting scales it). **Left click fires** along the crosshair; on an empty crossbow left click **reloads** (a "Reload crossbow" key can be bound too). **Hold right click to steady** the aim: the ring draws in. **X** swaps to your melee weapon and back. The enemy nearest the crosshair counts as your target: when they are beyond your crossbow's range you get "Out of range". While you hold the crossbow out, an enemy closing in no longer makes your character put it away.
+
+Aim in PZA's over-the-shoulder view (**Z**): in the normal view the crosshair sits on your own character. **W A S D step** you with the crossbow out too, while you aim and reload; with no key held you stand. **Out of a fight an empty crossbow reloads by itself** (bolts carried, both arms working), taking as long as a reload in a fight; a fight that starts meanwhile carries the reload on. No reload animation plays out of a fight.
 
 ## On-screen arrows
 

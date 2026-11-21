@@ -186,7 +186,41 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     /// <summary>Enemies are not kept waiting on the player's turn (see the HasInitiative patch); the short yield they keep, in ticks.</summary>
     public bool EnemiesDontWait { get; private set; }
     public int YieldTicks { get; private set; }
-    public int MaxSwingingAtYou { get; private set; }
+    /// <summary>The longest an enemy keeps losing the initiative roll before it swings anyway, ticks (0: no limit).</summary>
+    int _longestWaitTicks;
+    /// <summary>Per enemy slot: the tick its run of lost rolls against the player began, and its last lost roll (-1: not waiting).</summary>
+    int[] _waitSince = [], _waitLast = [];
+    /// <summary>A gap this long between lost rolls starts a new wait (a roll comes about every half second while it waits).</summary>
+    const int WaitGapTicks = 60;
+
+    /// <summary>
+    /// An enemy (slot <paramref name="i"/>) lost its initiative roll against the player: whether it has kept losing for the longest wait. Called
+    /// from the combat step, which runs fighters in parallel: it writes only enemy <paramref name="i"/>'s entries.
+    /// </summary>
+    public bool WaitedTooLong(int i, int now)
+    {
+        if (_longestWaitTicks <= 0 || (uint)i >= (uint)_waitSince.Length) return false;
+        if (_waitSince[i] < 0 || now - _waitLast[i] > WaitGapTicks) _waitSince[i] = now;
+        _waitLast[i] = now;
+        return now - _waitSince[i] >= _longestWaitTicks;
+    }
+
+    /// <summary>Enemy <paramref name="i"/> swings at the player: its wait is over.</summary>
+    public void WaitOver(int i)
+    {
+        if ((uint)i < (uint)_waitSince.Length) _waitSince[i] = -1;
+    }
+
+    /// <summary>The wait arrays cover every fighter slot (grown in the serial Schedule, never during the parallel combat step).</summary>
+    void SizeWaits(int count)
+    {
+        if (_waitSince.Length >= count) return;
+        int old = _waitSince.Length, size = Math.Max(count, old * 2);
+        Array.Resize(ref _waitSince, size);
+        Array.Resize(ref _waitLast, size);
+        Array.Fill(_waitSince, -1, old, size - old);
+        Array.Fill(_waitLast, -1, old, size - old);
+    }
     public bool ChamberOn { get; private set; }
     public bool ManualCrossbow { get; private set; }
     /// <summary>The chance a held block is beaten, as a share of Kenshi's own (Block beaten chance setting).</summary>
@@ -368,6 +402,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
 
         var slots = CombatPatches.WriteSlots(Combat);
         if (Slot >= slots.Length) return;
+        SizeWaits(Math.Max(slots.Length, prev.Length));
         ref var s = ref slots[Slot];
         int now = (int)tick;
 
@@ -568,6 +603,9 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         // defence update, which turns the guard to the blow's side through ChooseDefence.
         HoldGuard(world, ref s, now, fighting && !leaving);
 
+        // Out of a fight an empty crossbow reloads by itself (Meitou reloads only in fights).
+        if (!fighting) ReloadOutOfFight(world, ref s);
+
         // The player's own swing is never given up by itself to defend (Kenshi's abort when a blow at it is past half): only a feint gives it
         // up, and a chamber needs it to go on.
         if (s.AttackTech >= 0) s.DefendReadyTick = Math.Max(s.DefendReadyTick, now + 2);
@@ -736,6 +774,35 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             LogHitTaken(world, in hit);
     }
 
+    /// <summary>
+    /// The reload out of fights (Meitou reloads only in a fight, so a crossbow carried empty had to be loaded under attack): the hand-fought
+    /// character with its crossbow empty, bolts carried, both arms working, not lying down or swimming, reloads by itself for as long as Kenshi's
+    /// reload takes it (the crossbow's reload time by Crossbows and Dexterity), then takes one bolt, as a reload in a fight does. It runs on the fight
+    /// state's own reload timer, so a fight that starts meanwhile carries it on where it was. No reload animation plays out of a fight.
+    /// </summary>
+    void ReloadOutOfFight(World world, ref CombatSlot s)
+    {
+        if (!ManualCrossbow || s.Down || s.Loaded > 0) return;
+        var cold = world.Characters.Cold(Slot);
+        if (cold is null || cold.InCombat || cold.Fighter is not { Crossbow: { } x } fighter) return;
+        if (cold.Medical is not { BothArmsWork: true, Prone: false } || cold.WaterState == 3) return;
+        if (!x.InfiniteAmmo && Ammunition.FirstCarried(cold.Inventory, x.Data) < 0) return;
+
+        if (s.ReloadLeft <= 0)
+        {
+            float skill = RangedFormulas.SkillBlend(CombatPatches.Stat(cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.Crossbows),
+                CombatPatches.Stat(cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.Dexterity), fighter.DexterityMult);
+            s.ReloadTime = RangedFormulas.ReloadTime(skill, x.Stats.ReloadMin, x.Stats.ReloadMax);
+            s.ReloadLeft = s.ReloadTime;
+            Detail($"reloading out of a fight ({s.ReloadTime:0.0} s)");
+        }
+        s.ReloadLeft -= Dt(world);
+        if (s.ReloadLeft > 0) return;
+
+        CombatPatches.FinishReload(world, Combat, Slot, ref s, cold, x);
+        Detail($"reloaded out of a fight: {s.Loaded} loaded");
+    }
+
     /// <summary>The widest angle off the character's heading a chambered attacker may stand at (120 degrees: front, sides, a little behind).</summary>
     const float ChamberArcDegrees = 120;
     static readonly float ChamberArcCos = MathF.Cos(ChamberArcDegrees * MathF.PI / 180);
@@ -767,9 +834,21 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         ref var them = ref slots[a];
         if (me.AttackTech < 0 || them.AttackTech < 0) return;
         if (CombatPatches.Technique(Combat, me.AttackTech) is not { } mine || CombatPatches.Technique(Combat, them.AttackTech) is not { } theirs) return;
-        // Only a swing from the same side as the blow (both from their right, both overhead...) turns it aside.
-        int mySide = mine.DirectionOf(Math.Max(1, me.NextBlow)), theirSide = theirs.DirectionOf(Math.Max(1, hit.Blow));
-        if (mySide != theirSide) return;
+        // Only a swing from the same direction as the blow turns it aside, aimed as a block against it is (a thrust by a thrust, a blow at your left by
+        // a swing from your left), and the weapon must really have swung that way (not another side for want of the aimed one).
+        int theirSide = theirs.DirectionOf(Math.Max(1, hit.Blow));
+        int aim = Mirror ? AttackDir switch { Dir.Left => Dir.Right, Dir.Right => Dir.Left, _ => AttackDir } : AttackDir;
+        static int Plain(int d) => d == Dir.Up ? Dir.Overhead : d;   // the overhead guard meets an upward swing, so the overhead aim chambers one
+        if (AttackDir == Dir.None || Plain(aim) != Plain(theirSide))
+        {
+            Detail($"no chamber: aimed {Dir.Name(AttackDir)}, the blow comes {Dir.Name(theirSide)}");
+            return;
+        }
+        if (mine.DirectionOf(Math.Max(1, me.NextBlow)) != AttackTag(AttackDir))
+        {
+            Detail($"no chamber: the weapon swung another side than the aimed {Dir.Name(AttackDir)}");
+            return;
+        }
         // Only an attacker in front or at the side (up to ChamberArc off the way the character faces): a forward swing cannot turn aside a blow
         // from well behind.
         var prev = world.Characters.Previous;
@@ -831,8 +910,32 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         string lands = incoming != 0 && CombatPatches.Incoming(Combat, world, Slot, (int)now) is { } b ? $" (lands in {b.Lands - now})" : "";
         return $"tick {now}, {cold?.Name} #{Slot}: {state}, target {target}, block held {(BlockHeld ? "yes" : "no")}, attack waiting {(AttackSeq >= 0 ? "yes" : "no")}, "
             + $"enemies near {Attackers}, incoming {(incoming == 0 ? "none" : Dir.Name(incoming))}{lands}, poise {_poise} (set at a hit), combo step {_chain}, "
-            + $"crossbow {(s.Ranged ? $"yes (loaded {s.Loaded}, spread {ShotSpread:0.00})" : "no")}; "
+            + $"crossbow {(s.Ranged ? $"yes (loaded {s.Loaded}, spread {ShotSpread:0.00})" : "no")}; {EnemiesReport(world, read, now)}; "
             + $"parries {Parries}, clashes {_clashes}, chambers {_chambers}";
+    }
+
+    /// <summary>
+    /// The test report's enemies: each fighter whose target is the hand-fought character, with what keeps it from swinging now (the first of
+    /// Kenshi's checks before a swing that holds it), its gap to the character and its run of lost initiative rolls. Test channel only.
+    /// </summary>
+    string EnemiesReport(World world, CombatSlot[] read, long now)
+    {
+        var prev = world.Characters.Previous;
+        if ((uint)Slot >= (uint)prev.Length) return "enemies: none";
+        var parts = new List<string>();
+        for (int c = 0; c < read.Length && c < prev.Length; c++)
+        {
+            ref readonly var e = ref read[c];
+            if (c == Slot || !prev[c].Alive || e.TargetSlot != Slot || e.TargetGeneration != Generation) continue;
+            string why = e.Down ? "down" : e.AttackTech >= 0 ? "swinging" : e.ReactTech >= 0 ? "defending" : now < e.StunUntil ? "staggered"
+                : now < e.PauseUntil ? $"pause {e.PauseUntil - now}t" : now < e.ReadyTick ? $"not ready {e.ReadyTick - now}t"
+                : !e.Engaged ? "not let in (engage list)" : e.YieldTo == Slot && now < e.YieldUntil ? $"yielding {e.YieldUntil - now}t"
+                : e.Ranged ? "shooting" : "free (out of reach, no room, or no slot)";
+            var d = prev[c].Position - prev[Slot].Position;
+            string wait = c < _waitSince.Length && _waitSince[c] >= 0 ? $", losing rolls {now - _waitSince[c]}t" : "";
+            parts.Add($"{world.Characters.Cold(c)?.Name}: {why}, {MathF.Sqrt(d.X * d.X + d.Z * d.Z):0} away{wait}");
+        }
+        return parts.Count == 0 ? "enemies: none" : "enemies: " + string.Join(" | ", parts);
     }
 
     /// <summary>The held guard (see Schedule).</summary>
@@ -1066,6 +1169,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         _rollAttacker = -1;
         _rollSeq = _rollBlow = 0;
         _rollHolds = false;
+        Array.Fill(_waitSince, -1);
+        Array.Fill(_waitLast, -1);
     }
 
     void CopySettings(World world)
@@ -1100,7 +1205,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         CounterSounds = settings.CounterSounds;
         EnemiesDontWait = settings.EnemiesDontWait;
         YieldTicks = Math.Max(1, (int)Math.Round(0.5 / tick));
-        MaxSwingingAtYou = Math.Max(1, settings.MaxSwingingAtYou);
+        _longestWaitTicks = Math.Max(0, (int)Math.Round(settings.LongestEnemyWait / tick));
         ClashOn = settings.Clash;
         _clashTicks = Math.Max(1, (int)Math.Round(settings.ClashWindow / tick));
         ChamberOn = settings.Chamber;
@@ -1171,7 +1276,14 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         hasher.Add(_comboRestTicks);
         hasher.Add(EnemiesDontWait);
         hasher.Add(YieldTicks);
-        hasher.Add(MaxSwingingAtYou);
+        hasher.Add(_longestWaitTicks);
+        for (int k = 0; k < _waitSince.Length; k++)
+            if (_waitSince[k] >= 0)
+            {
+                hasher.Add(k);
+                hasher.Add(_waitSince[k]);
+                hasher.Add(_waitLast[k]);
+            }
         hasher.Add(HyperArmorOn);
         hasher.Add(_poiseScale);
         hasher.Add(_poise);

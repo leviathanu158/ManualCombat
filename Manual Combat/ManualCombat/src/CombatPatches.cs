@@ -33,6 +33,12 @@ public static class CombatPatches
     static MethodInfo s_hasInitiative = null!;
     /// <summary>CombatSteering.Velocity: a fighter's footwork velocity each tick (the fight's own movement, no move order).</summary>
     static MethodInfo s_velocity = null!;
+    /// <summary>PursuitSystem.Steer: hands a fighter to the fight steering (melee only: a crossbowman stands to aim and reload).</summary>
+    static MethodInfo s_steer = null!;
+    /// <summary>CombatSystem.LoadedKind: the ammunition a finished reload loads (the reload out of fights).</summary>
+    static MethodInfo s_loadedKind = null!;
+    /// <summary>ItemUseObservers.Report (internal, optional): other mods hear a bolt used up by the reload out of fights.</summary>
+    static MethodInfo? s_reportUse;
     /// <summary>CombatSystem.MayJoin / HasSlot: the limits on how many fighters may close in on, and swing at, one target.</summary>
     static MethodInfo s_mayJoin = null!, s_hasSlot = null!;
     /// <summary>CombatSystem.ReactionEnds: a block or dodge ends once no swing is coming (a dodge with none coming is kept to its end).</summary>
@@ -92,6 +98,10 @@ public static class CombatPatches
         s_applyBlocked = Need(AccessTools.Method(cs, "ApplyBlocked"), "CombatSystem.ApplyBlocked", missing);
         s_hasInitiative = Need(AccessTools.Method(cs, "HasInitiative"), "CombatSystem.HasInitiative", missing);
         s_velocity = Need(AccessTools.Method(typeof(CombatSteering), "Velocity"), "CombatSteering.Velocity", missing);
+        s_steer = Need(AccessTools.Method(typeof(PursuitSystem), "Steer"), "PursuitSystem.Steer", missing);
+        s_loadedKind = Need(AccessTools.Method(cs, "LoadedKind", [typeof(CharacterCold), typeof(CrossbowInstance)]), "CombatSystem.LoadedKind", missing);
+        if (AccessTools.TypeByName("Meitou.Simulation.Items.ItemUseObservers") is { } observers)
+            s_reportUse = AccessTools.Method(observers, "Report") is { } report && report.GetParameters().Length == 7 ? report : null;
         s_mayJoin = Need(AccessTools.Method(cs, "MayJoin"), "CombatSystem.MayJoin", missing);
         s_hasSlot = Need(AccessTools.Method(cs, "HasSlot"), "CombatSystem.HasSlot", missing);
         s_reactionEnds = Need(AccessTools.Method(cs, "ReactionEnds"), "CombatSystem.ReactionEnds", missing);
@@ -149,6 +159,8 @@ public static class CombatPatches
         Params(s_applyBlocked, missing, "world", "a", "d", "ac", "now");
         Params(s_hasInitiative, missing, "world", "i", "s", "t", "now");
         Params(s_velocity, missing, "world", "i", "cold");
+        Params(s_steer, missing, "world", "i", "n", "cold", "st", "holding");
+        if (s_velocity is not null && !s_velocity.GetParameters().Any(p => p.Name == "face" && p.IsOut)) missing.Add("CombatSteering.Velocity's out face");
         Params(s_mayJoin, missing, "world", "i");
         Params(s_hasSlot, missing, "world", "i");
         Params(s_reactionEnds, missing, "world", "i", "s", "now", "wait");
@@ -189,8 +201,10 @@ public static class CombatPatches
             lines.Add("patched CombatSystem.ApplyBlocked");
             h.Patch(s_hasInitiative, postfix: Hook(nameof(HasInitiativePostfix)));
             lines.Add("patched CombatSystem.HasInitiative");
-            h.Patch(s_velocity, postfix: Hook(nameof(VelocityPostfix)));
+            h.Patch(s_velocity, prefix: Hook(nameof(VelocityPrefix)), postfix: Hook(nameof(VelocityPostfix)));
             lines.Add("patched CombatSteering.Velocity (W A S D footwork)");
+            h.Patch(s_steer, postfix: Hook(nameof(SteerPostfix)));
+            lines.Add("patched PursuitSystem.Steer (footwork with the crossbow out)");
             h.Patch(s_mayJoin, postfix: Hook(nameof(GatePostfix)));
             h.Patch(s_hasSlot, postfix: Hook(nameof(GatePostfix)));
             lines.Add("patched CombatSystem.MayJoin / HasSlot (swing anytime)");
@@ -284,6 +298,81 @@ public static class CombatPatches
         {
             ManualCombatMod.LogException("CombatSteering.Velocity postfix", e);
         }
+    }
+
+    /// <summary>The movement flags of a path held or asked for (PursuitSystem's PathFlags).</summary>
+    const ushort AnyPath = (ushort)Meitou.Simulation.Movement.MoveFlags.AnyPath;
+
+    /// <summary>
+    /// Footwork with the crossbow out: Meitou steers no crossbowman (it stands to aim and reload, walking a path only to close in). The hand-fought
+    /// character with its crossbow out is handed to the fight steering all the same, so W A S D step it while it aims and reloads; with no key held
+    /// it stands (<see cref="VelocityPrefix"/>). Not while down, staggered (a stumble holds it still, as Steer's own) or on Hold.
+    /// </summary>
+    static void SteerPostfix(World world, int i, ref CharacterHot n, CharacterCold cold, in CombatSlot st, bool holding, ref bool __result)
+    {
+        try
+        {
+            if (__result || !st.Ranged || st.Down || holding || cold.Steer is not { } steer) return;
+            var mc = ManualCombatSystem.For(world);
+            if (mc is null || !mc.Footwork || !mc.Controls(world, i)) return;
+
+            // No path chase while the keys steer: the path is dropped and the pursuit step ends here (true).
+            if ((n.Flags & AnyPath) != 0)
+            {
+                n.Flags = (ushort)(n.Flags & ~AnyPath);
+                n.PathCursor = 0;
+                cold.PathRequest = 0;
+            }
+            __result = true;
+            if (world.Tick < st.StunUntil) return;
+            steer.Active = true;
+        }
+        catch (Exception e)
+        {
+            ManualCombatMod.LogException("PursuitSystem.Steer postfix", e);
+        }
+    }
+
+    /// <summary>
+    /// The crossbow's footwork (<see cref="SteerPostfix"/>): the step the keys push, or standing still, facing the target. Meitou's own footwork (its
+    /// melee bands) is not asked.
+    /// </summary>
+    static bool VelocityPrefix(World world, int i, CharacterCold cold, out Vector2 face, ref Vector2 __result)
+    {
+        face = Vector2.Zero;
+        try
+        {
+            var mc = ManualCombatSystem.For(world);
+            if (mc is null || !mc.Footwork || !mc.Controls(world, i)) return true;
+            var read = s_read(mc.Combat);
+            if ((uint)i >= (uint)read.Length || !read[i].Ranged) return true;
+
+            __result = mc.MoveIntent * mc.FootworkSpeed * (cold.Race?.CombatMoveSpeedMult ?? 1);
+            face = StepInDirection(mc.Combat, world, i) ?? Vector2.Zero;
+            return false;
+        }
+        catch (Exception e)
+        {
+            ManualCombatMod.LogException("CombatSteering.Velocity prefix", e);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// A reload's end as Meitou's (CombatSystem.Reload, ApplyReload), for the reload out of fights: the crossbow holds its shots, of the kind the
+    /// reload loads, and one bolt of it is taken from the inventory (other mods hear of it).
+    /// </summary>
+    public static void FinishReload(World world, CombatSystem combat, int slot, ref CombatSlot s, CharacterCold cold, CrossbowInstance x)
+    {
+        s.ReloadLeft = 0;
+        s.Loaded = x.NumShots;
+        s.LoadedKind = (AmmoData?)s_loadedKind.Invoke(null, [cold, x]);
+        cold.CrossbowShots = s.Loaded;
+        if (x.InfiniteAmmo) return;
+        string ammo = s.LoadedKind?.StringId ?? x.Data.AmmoId;
+        if (!Ammunition.UseOne(cold.Inventory, ammo, out bool unitGone)) return;
+        if (s_reportUse is { } report && Enum.TryParse(report.GetParameters()[1].ParameterType, "Ammunition", out object? kind))
+            report.Invoke(null, [world, kind, ammo, world.Characters.IdOf(slot), null, 1f, unitGone]);
     }
 
     /// <summary>The flat direction from fighter <paramref name="i"/> to its target, or null.</summary>
@@ -591,19 +680,19 @@ public static class CombatPatches
 
             // An enemy asking to swing at the hand-fought character (manual combat only): Kenshi's turn-taking stays (the initiative roll, the
             // loser's half-second yield), but the yield is not stretched while the player holds a block (Kenshi starts it when the winner's block
-            // ends, and the player's held block never ends); and only so many enemies swing at the player at once.
+            // ends, and the player's held block never ends), and an enemy that has kept losing the roll for the longest wait swings anyway (the
+            // player's character never takes its turn by itself, so a much weaker enemy would stand and stare). How many swing at the player at
+            // once is Meitou's attack slots (HasSlot, asked before this).
             if (mc.EnemiesDontWait && mc.Controls(world, t) && !mc.Controls(world, i))
             {
                 if (!__result)
                 {
                     if (s.YieldTo == t) s.YieldUntil = Math.Min(s.YieldUntil, now + mc.YieldTicks);
-                    return;
+                    if (!mc.WaitedTooLong(i, now)) return;
+                    __result = true;
+                    if (s.YieldTo == t) s.YieldUntil = now;   // the lost roll's wait is undone
                 }
-                var r = s_read(__instance);
-                int generation = world.Characters.Previous[t].Generation, swinging = 0;
-                for (int c = 0; c < r.Length; c++)
-                    if (c != i && c != t && r[c].AttackTech >= 0 && r[c].TargetSlot == t && r[c].TargetGeneration == generation) swinging++;
-                if (swinging >= mc.MaxSwingingAtYou) __result = false;   // enough already swinging at the player: wait for one to finish
+                mc.WaitOver(i);   // it swings now
                 return;
             }
 

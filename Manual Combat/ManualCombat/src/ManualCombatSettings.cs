@@ -83,13 +83,10 @@ public sealed class ManualCombatSettings
         Hint = "Holding block raises the guard right away, even with no swing coming (the real block takes over when one comes).")]
     public bool GuardPose { get; set; } = true;
 
-    [Setting("Directional blocking",
-        Hint = "On: the guard must face the swing's side (aimed like your swings), and only the matching side stops it. "
-            + "Off: the block button stops a swing from any side.")]
-    public bool DirectionalBlocking { get; set; } = false;
+    // Blocking is always directional (the guard must face the swing's side, aimed like your swings): an integral part of the mod, no setting.
 
     [Setting("Mirror left and right guards",
-        Hint = "Swap which side a left or right aim guards, if blocking left feels backwards.", VisibleWhen = nameof(DirectionalBlocking))]
+        Hint = "Swap which side a left or right aim guards, if blocking left feels backwards.")]
     public bool MirrorGuards { get; set; } = false;
 
     [Setting("Parry", Hint = "A block pressed just before the swing lands staggers the attacker.")]
@@ -98,6 +95,11 @@ public sealed class ManualCombatSettings
     [Setting("Parry window (seconds)", Min = 0.05, Max = 0.6, Step = 0.05,
         Hint = "How soon before the swing lands you must press block for a parry.", VisibleWhen = nameof(Parry))]
     public double ParryWindow { get; set; } = 0.3;
+
+    [Setting("Block beaten chance (x Kenshi's)", Min = 0, Max = 1, Step = 0.05,
+        Hint = "A held block facing the right way can still be beaten, as in Kenshi, when the attacker's skill is well above your defence. "
+            + "1: Kenshi's own chance; 0.5: half as likely; 0: a held block always holds. A parry always blocks.")]
+    public double BlockBeatenScale { get; set; } = 0.5;
 
     [Setting("Attack buffer (seconds)", Min = 0.1, Max = 2, Step = 0.05,
         Hint = "How long an attack press waits for the moment your character is able to swing. Short: a press either swings now or not at all. "
@@ -237,6 +239,8 @@ public sealed class ManualCombatSettings
     [Setting("On-screen messages", Hint = "Show 'Parry!', a target switch and similar briefly under the crosshair in a fight.")]
     public bool Messages { get; set; } = true;
 
-    [Setting("Log details", Hint = "Write each manual attack, block and parry to log.txt (for testing).")]
+    [Setting("Log details", SubGroup = "Debug",
+        Hint = "For testing and bug reports: write each manual attack, block, parry, block roll and hit taken to log.txt. "
+            + "Leave it off to play: off, none of these lines is even put together.")]
     public bool LogDetails { get; set; } = false;
 }

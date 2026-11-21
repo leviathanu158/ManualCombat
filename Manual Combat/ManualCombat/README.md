@@ -1,6 +1,6 @@
-# Manual Combat for Meitou (v0.9.0)
+# Manual Combat for Meitou (v0.9.8)
 
-Fight with your own hands, Mount & Blade style. Built for Meitou **0.22.2-nightly.20261119**. **Needs PZA's WASD & Controller Support**: manual combat is only on while its WASD movement is on (with WASD off, or without PZA's mod, your characters fight the normal Kenshi way).
+Fight with your own hands, Mount & Blade style. Built for Meitou **0.22.2-nightly.20261121**. **Needs PZA's WASD & Controller Support**: manual combat is only on while its WASD movement is on (with WASD off, or without PZA's mod, your characters fight the normal Kenshi way).
 
 ## Install / update
 
@@ -38,7 +38,9 @@ Start fights as usual: right-click an enemy (or use PZA's attack button), or get
 - **You attack what you look at.** An attack turns on the enemy within reach nearest your crosshair.
 - **A click swings now or not at all.** A press waits at most 0.4 s for a chance to swing (the *Attack buffer* setting), so your character doesn't swing later on its own.
 - **Feints.** Pressing block or dodge early in your own swing (the first half of the wind-up) cancels it, and your next attack waits a moment (0.3 s). Later in the swing you're committed, and the guard comes when the swing ends. Right after your blow lands, you can't block or dodge for 0.2 s. All three are settings.
-- **Group fights:** with 3 or more enemies on you, your held guard turns to each swing's side by itself, even with directional blocking on (setting *Auto-block from this many attackers*). You still hold right click to block.
+- **Blocking is directional.** Your guard faces the side you aim, and only a guard on the swing's side stops it.
+- **A good block can still be beaten**, as in Kenshi: when the attacker's skill is well above your defence, a blow may get past a guard on the right side. It happens half as often as in Kenshi (setting *Block beaten chance*). A **parry always blocks**.
+- **Group fights:** with 3 or more enemies on you, your held guard turns to each swing's side by itself (setting *Auto-block from this many attackers*). You still hold right click to block.
 - **Your target** gets Kenshi's hover outline, in red.
 - A guard raised late still counts if it's up when the blow lands.
 
@@ -47,7 +49,7 @@ Start fights as usual: right-click an enemy (or use PZA's attack button), or get
 - **Riposte:** your first swing within 1.5 s of a parry plays faster.
 - **Combos:** when your swing hits, attack from a *different side* in the short timing just after the hit (0.05 s to 0.25 s after it, by default). Your swing is cut right there, Kenshi's pause after a hit is skipped, and the next swing comes out at once, a little faster. A combo is two swings at most; after it your next ordinary swing waits a short rest (0.8 s by default) once the combo ends, while blocking and dodging stay free. Too early or too late, or from the same side, and it's a normal swing after the pause.
 - **Clashing:** if your swing and an enemy's swing at you come from the **same side** (both from their right, both overhead...) and land at almost the same moment, they meet in the air. Your swing and that one enemy's stop, sparks fly and the parry sound plays; in a group fight nobody else's swing is touched. The stronger fighter (Strength, weapon skill and weapon weight) may **crush through** and land the blow anyway: "Crushed through!" when it's you, "Overpowered!" when it's them.
-- **Chambering:** attack from the **same side** as an enemy's blow just before it lands and your swing turns it aside while it carries on. Their blow misses (and they get Kenshi's pause after a miss), with the parry sound.
+- **Chambering:** attack from the **same side** as an enemy's blow just before it lands and your swing turns it aside while it carries on. It works against enemies in front of you or at your side, not from well behind. Their blow misses (and they get Kenshi's pause after a miss), with the parry sound.
 
 ## Fair enemy pacing (manual combat only)
 
@@ -83,12 +85,13 @@ While fighting, faint arrows show at the centre of the screen (PZA's crosshair i
 - **Left/right click fight in a fight**, **Direction arrows**, **Show the incoming swing's side**.
 - **Attack what you look at**, **Swing even out of reach**, **Mirror attack sides**, **No falling dodges** (leaves out Kenshi's dodges that throw you to the ground).
 - **W A S D footwork in fights**, **Fight-mode hint** (a small line at the top right while you fight), **Footwork speed**, **Close in by itself**.
-- **Show the guard at once**, **Directional blocking**, **Mirror left and right guards**.
+- **Show the guard at once**, **Mirror left and right guards**.
 - **Block and dodge cancel your swing (feint)**, with **Feint window**, **Locked after your blow** and **Attack lockout after a feint**.
 - **Auto-block from this many attackers** (0 = never), **Outline your target**, **Arrow opacity**, **Hint height**.
 - **Combos and counters**: **Combos**, **Riposte speed**, **Combo speed per step**, **Combo timing starts**, **Combo timing length**, **Rest after a combo**, **Clash and chamber sounds**, **Clashing** and **Clash window**, **Chambering** and **Chamber window**.
 - **Crossbows**: **Manual crossbow**, **Spread**, **Steadied spread**, **Time to steady**.
-- **Parry** and **Parry window**, **Attack buffer**, **Skip the initiative roll**, **Log details**.
+- **Parry** and **Parry window**, **Block beaten chance**, **Attack buffer**, **Skip the initiative roll**.
+- **Debug**: **Log details** writes every attack, block, parry, block roll and hit taken to `log.txt`, for testing and bug reports. Leave it off to play: off, the mod doesn't even put those lines together.
 - **On-screen messages**: short lines like *Parry!* show under the crosshair for a moment in a fight, the newest replacing the last.
 
 ## Animation mods

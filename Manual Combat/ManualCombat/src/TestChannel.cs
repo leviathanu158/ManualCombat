@@ -31,6 +31,9 @@ public static partial class InputWatch
         static readonly string? s_dir = Environment.GetEnvironmentVariable("MANUALCOMBAT_TEST_DIR") is { Length: > 0 } d && Directory.Exists(d) ? d : null;
         static bool s_told;
 
+        /// <summary>The test channel is on (test runs only): the mod's detail lines go to log.txt whatever the Log details setting says.</summary>
+        internal static bool On => s_dir is not null;
+
         public static void Poll()
         {
             if (s_dir is null) return;
@@ -66,7 +69,7 @@ public static partial class InputWatch
                     result = "error: " + e.Message;
                 }
                 results.Add($"{s_ctx.Tick} {line} -> {result}");
-                ManualCombatMod.Log($"test: {line} -> {result}");
+                if (!line.StartsWith("report", StringComparison.OrdinalIgnoreCase)) ManualCombatMod.Log($"test: {line} -> {result}");   // reports: mc.out only
             }
             try
             {
@@ -118,7 +121,9 @@ public static partial class InputWatch
                     int dir = on && a.Length > 2 ? Direction(a[2]) : AimNow;
                     Send(new ManualBlock(who, on, dir) { Tick = tick });
                     s_blockSent = on;
-                    s_blockByMouse = false;
+                    // Held as the mouse button holds it, until "block off": marked as the block KEY, the next control tick would see that key up
+                    // and let go at once.
+                    s_blockByMouse = on;
                     s_blockSentDir = dir;
                     return on ? "ok, block held " + Dir.Name(dir) : "ok, block let go";
                 }

@@ -28,9 +28,9 @@ Full background is in `ManualCombat-handover.txt` (the original claude.ai handov
 - All world changes go through SimCommands, and ALL mod state is hashed (IStateHashed), for determinism and future multiplayer.
 
 ## His PC
-- Meitou install: `C:\Kenshi_Meitou`. Current version: `versions\0.22.2-nightly.20261119.2\` (commit 69d2688bc69d47b8374f8c7e203d50d66f092710). He runs the Vulkan renderer.
+- Meitou install: `C:\Kenshi_Meitou`. Current version: `versions\0.22.2-nightly.20261121\` (commit 802c1ca3fcec7250d0a22c7be3dd647013cdab2a, since 2026-11-21; before: 0.22.2-nightly.20261119.2, 69d2688). He runs the Vulkan renderer.
 - .NET SDK 11.0.100 (10.0.100 also installed).
-- Game log: `C:\Kenshi_Meitou\versions\0.22.2-nightly.20261119.2\log.txt`. Mod lines start with `mod       manualcombat:`, and a session starts at the last `manualcombat: ready`.
+- Game log: `C:\Kenshi_Meitou\versions\0.22.2-nightly.20261121\log.txt` (next to the game exe; follows the version). Mod lines start with `mod       manualcombat:`, and a session starts at the last `manualcombat: ready`.
 - Kenshi: `C:\Steam Games\steamapps\common\Kenshi`. The mod installs to `Kenshi\mods\ManualCombat`.
 - Workshop mods: `C:\Steam Games\steamapps\workshop\content\233860`. He runs a large mod list that includes the animation mods Great Anims Mod (2725549481), GROUNDED2 (3289699139) and More Combat Animation (1691422256). With his full list, every weapon swings from all four directions.
 - Launcher config: `%LOCALAPPDATA%\Meitou\launcher.json` (InstallFolder, KenshiPath). Saves: `%LOCALAPPDATA%\Meitou\save\` (the test save is `mctest`).
@@ -81,12 +81,20 @@ Kenshi facts:
   - 0.5 s grace after any stagger.
 - **Enemy pacing**: a lost roll's yield is capped at 0.5 s, and at most 2 enemies swing at you at once (setting 1–6).
 - **Pause**: presses made while paused can't parry, chamber or combo (the test channel is exempt).
-- **Crossbow**:
+- **Crossbow** (needs PZA's 3rd-person shoulder view, Z: in the Normal view the screen centre sits on your own character):
   - Reticle with a spread ring; LMB fires along the crosshair ray, with a deterministic roll.
   - LMB on empty reloads. Holding RMB steadies to 35% over 1 s.
   - No zoom yet.
 - If the weapon lacks the aimed direction, it swings another side and shows "No Attack For That Direction".
 - Log details setting: default OFF (it caused stutters).
+
+## Decided 2026-11-20: block chance
+- A held block in the right direction is NOT guaranteed. Kenshi's own block roll (Defence vs the attacker's Attack) still decides, so players can't beat huge stat gaps, but it is more generous than base Kenshi. Default: the chance of a block being beaten is Kenshi's × 0.5 (a setting).
+- A **parry** (block pressed within the parry window before the hit) **always blocks**. Whether it always fully staggers the attacker is a later choice.
+- 0.9.0 gave held blocks a fixed 100% (ChooseDefence prefix); replaced in 0.9.4 (ManualCombatSystem.BlockHolds).
+- **Chambering** works against attackers in front or at the side, not from too far behind: up to 120° off the character's heading (ManualCombatSystem.ChamberArcDegrees, 0.9.6).
+- **Blocking is always directional**: no setting (the user: "an integral part of the mod"). Removed the Directional blocking option in 0.9.4.
+- Test runs must start Meitou with the working directory `%LOCALAPPDATA%\Meitou` (as the launcher does): Meitou reads `meitou.user.json` from the working directory, so starting in the version folder uses an almost empty settings file there instead of his.
 
 ## Rejected: don't re-propose
 - U as Passive stance, and a "disengaged" mode (abusable). The chosen fix is Alt+right click.
@@ -110,11 +118,15 @@ Kenshi facts:
   - Results go to `ctl\mc.out`.
   - Presses count as live while paused, so pause + step can time parries exactly.
 - `meitou-tools mod-check <save>` runs code mods headless and compares state hashes (the determinism check).
-- The mctest save (safe spot, WASD ON, weapon) is being made by him. The old "quicksave" had WASD OFF.
+- The mctest save: Su (c:0.0, all skills 100) and Zagan (c:1.0). WASD comes on by itself (PZA's "On at start" is ticked). The first spot was near a Shek town and its guards joined fights (they knocked out test bandits), so he is moving it somewhere secluded.
+- The test channel can't press keys or move PZA's view. To use PZA's panel, click its "+" beside "WASD ON" (2538,153 at 2560x1351); Shoulder camera is at (1277,532) and the close button at (1612,291). `camera set` has no effect in PZA's shoulder view, so crossbow aiming there needs a human.
+- Give items with the record ID (names with spaces get split). Give the crossbow before the bolts: bolts fill the free space one per square.
+- Scripts (session scratchpad, may be gone): c.ps1 (agent channel), mc.ps1 (mod channel), start.ps1, timed.ps1 (press N ticks before a blow lands: block/attack/other/dodge).
 
 ## PZA collaboration
 PZA plans an API in his WASD mod and will patch Manual Combat to use it. It will replace the Driver.On reflection, FightHold, Resolve priority, Alt handling and the camera/crosshair reads. **When his patched version comes back, it becomes the base: read his API and build on it.** Controller support is his.
 
 ## Open / next
 - First automated test once mctest exists, e.g. 3 bandits. It should cover the max-2-swinging rule, parry timing, clash, chamber, hyper armor and crossbow. He liked scenario tests and fuzzing via the test channel.
+- After testing: one commit that makes the tested settings the mod's defaults, so it plays well out of the box. His tuned values so far: Chamber window 0.5, Stagger grace 0.5, Hint height 44 (that last one was lost with the stray test settings file).
 - Later: crossbow zoom, melee weapon swap, a handoff note for PZA, and a Steam Workshop page. Check whether Meitou code mods can ship as Workshop mods.

@@ -167,7 +167,6 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     bool _leaveNew;
 
     // ---- Settings, copied each tick in Inputs. ----
-    public bool Directional { get; private set; }
     public bool Mirror { get; private set; }
     public bool ParryOn { get; private set; }
     public int ParryTicks { get; private set; }
@@ -190,6 +189,11 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     public int MaxSwingingAtYou { get; private set; }
     public bool ChamberOn { get; private set; }
     public bool ManualCrossbow { get; private set; }
+    /// <summary>The chance a held block is beaten, as a share of Kenshi's own (Block beaten chance setting).</summary>
+    float _beatenScale;
+    /// <summary>The last blow the block roll answered (attacker, attack sequence, blow) and its answer: one roll per blow.</summary>
+    int _rollAttacker = -1, _rollSeq, _rollBlow;
+    bool _rollHolds;
     bool _combos;
     float _riposteSpeed, _chainSpeed, _spreadScale, _steadyMin, _steadySeconds;
     int _comboFromTicks, _comboToTicks, _comboRestTicks;
@@ -426,8 +430,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
                 _hitSwingSeq = -1;   // one combo per hit
                 Detail($"combo: cut into a {Dir.Name(AttackDir)} swing {sinceHit} ticks after the hit");
             }
-            else if (_combos && s.AttackSeq == _hitSwingSeq) Detail($"no combo: pressed {sinceHit} ticks after the hit"
-                + (AttackDir == _lastSwingAim ? " from the same side" : "") + $" (timing {_comboFromTicks} to {_comboToTicks})");
+            else if (_combos && s.AttackSeq == _hitSwingSeq)
+                Detail($"no combo: pressed {sinceHit} ticks after the hit{(AttackDir == _lastSwingAim ? " from the same side" : "")} (timing {_comboFromTicks} to {_comboToTicks})");
         }
         else if (AttackSeq >= 0 && s.AttackSeq != AttackSeq)
         {
@@ -451,8 +455,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         else if (AttackSeq >= 0 && now > AttackUntil && !_attackReported)
         {
             _attackReported = true;
-            string why = WhyNoSwing(in s, now);
-            Detail("attack press ran out without a swing: " + why);
+            Detail($"attack press ran out without a swing: {WhyNoSwing(in s, now)}");
             AttackSeq = -1;
         }
 
@@ -640,7 +643,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         world.BlockSparks?.Enqueue(new CharacterId(best, slots[best].Generation));
         if (CounterSounds) world.PostSound("Impact", new CharacterId(Slot, Generation), "Impacts", "Parry");
         _clashes++;
-        Detail($"CLASH with {world.Characters.Cold(best)?.Name}, both {Dir.Name(mySide)} (clashes this world: {_clashes})");
+        Detail($"CLASH with {world.Characters.Cold(best)?.Name}, both {Dir.Name(mySide)}{(crushed.Length > 0 ? ": " + crushed : "")} (clashes this world: {_clashes})");
         ManualCombatMod.Notify(crushed.Length > 0 ? crushed : "Clash!");
     }
 
@@ -726,6 +729,20 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     /// </summary>
     public void HitLanding(World world, ref PendingHit hit)
     {
+        Chamber(world, ref hit);
+        // Log details / test runs: a blow that still lands on the character after the chamber check (a chambered one does not).
+        if (Slot >= 0 && hit.Source == CombatHitSource.Melee && !hit.Cancelled && hit.Victim.Slot == Slot && hit.Victim.Generation == Generation
+            && Logging)
+            LogHitTaken(world, in hit);
+    }
+
+    /// <summary>The widest angle off the character's heading a chambered attacker may stand at (120 degrees: front, sides, a little behind).</summary>
+    const float ChamberArcDegrees = 120;
+    static readonly float ChamberArcCos = MathF.Cos(ChamberArcDegrees * MathF.PI / 180);
+
+    /// <summary>The player's own blows (combos) and chambering: see <see cref="HitLanding"/>.</summary>
+    void Chamber(World world, ref PendingHit hit)
+    {
         if (Slot < 0 || hit.Source != CombatHitSource.Melee) return;
 
         // The player's own blow landing: the next swing may chain from it (combos).
@@ -753,6 +770,19 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         // Only a swing from the same side as the blow (both from their right, both overhead...) turns it aside.
         int mySide = mine.DirectionOf(Math.Max(1, me.NextBlow)), theirSide = theirs.DirectionOf(Math.Max(1, hit.Blow));
         if (mySide != theirSide) return;
+        // Only an attacker in front or at the side (up to ChamberArc off the way the character faces): a forward swing cannot turn aside a blow
+        // from well behind.
+        var prev = world.Characters.Previous;
+        if ((uint)a < (uint)prev.Length && (uint)Slot < (uint)prev.Length)
+        {
+            var to = new Vector2(prev[a].Position.X - prev[Slot].Position.X, prev[a].Position.Z - prev[Slot].Position.Z);
+            var facing = new Vector2(MathF.Sin(prev[Slot].Yaw), MathF.Cos(prev[Slot].Yaw));   // as HitOutcomes.Behind reads the heading
+            if (to.LengthSquared() > 1e-4f && Vector2.Dot(Vector2.Normalize(to), facing) < ChamberArcCos)
+            {
+                Detail($"no chamber: {world.Characters.Cold(a)?.Name} is too far behind");
+                return;
+            }
+        }
 
         hit.Cancelled = true;
         _chambers++;
@@ -760,6 +790,27 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         if (CounterSounds) world.PostSound("Impact", new CharacterId(Slot, Generation), "Impacts", "Parry");
         Detail($"CHAMBER: {world.Characters.Cold(a)?.Name}'s blow ({Dir.Name(theirSide)}) turned aside (chambers this world: {_chambers})");
         ManualCombatMod.Notify("Chamber!");
+    }
+
+    /// <summary>
+    /// Log details / test runs: why a blow at the hand-fought character got through, as the game's outcome rule (HitOutcomes.Decide) saw it: the
+    /// defence up (a block counts when its direction is the blow's and its clip is past half), and whether a stagger voided it. Read-only.
+    /// </summary>
+    void LogHitTaken(World world, in PendingHit hit)
+    {
+        var slots = CombatPatches.WriteSlots(Combat);
+        int a = hit.Attacker.Slot;
+        if ((uint)Slot >= (uint)slots.Length || (uint)a >= (uint)slots.Length) return;
+        ref var me = ref slots[Slot];
+        long now = hit.Tick;
+        int side = CombatPatches.BlowSide(Combat, world, Slot, a, hit.Blow);
+        var defence = me.ReactTech >= 0 ? CombatPatches.Technique(Combat, me.ReactTech) : null;
+        string up = defence is null
+            ? "no defence up"
+            : $"defence '{defence.Name}' ({(defence.IsBlock ? "block" : defence.IsDodge ? "dodge" : "other")}, side {defence.AttackDirection1}, "
+              + $"{(me.ReactTicks > 0 ? (now - me.ReactStart) / (float)me.ReactTicks : 0):0.00} of its clip)";
+        Detail($"HIT TAKEN from {world.Characters.Cold(a)?.Name}: blow side {side}, block held {(BlockHeld ? $"yes ({Dir.Name(BlockDir)})" : "no")}, {up}"
+            + (now < me.StunUntil ? $", staggered for {me.StunUntil - now} more ticks (a stagger voids any guard)" : ""));
     }
 
     /// <summary>The last system to run (the test channel's report).</summary>
@@ -776,8 +827,11 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         var cold = world.Characters.Cold(Slot);
         string target = s.TargetSlot < 0 ? "none" : $"{world.Characters.Cold(s.TargetSlot)?.Name} #{s.TargetSlot}";
         string state = s.Down ? "down" : s.AttackTech >= 0 ? "swinging" : s.ReactTech >= 0 ? "defending" : now < s.StunUntil ? "staggered" : "free";
+        int incoming = CombatPatches.IncomingSide(Combat, world, Slot, (int)now);
+        string lands = incoming != 0 && CombatPatches.Incoming(Combat, world, Slot, (int)now) is { } b ? $" (lands in {b.Lands - now})" : "";
         return $"tick {now}, {cold?.Name} #{Slot}: {state}, target {target}, block held {(BlockHeld ? "yes" : "no")}, attack waiting {(AttackSeq >= 0 ? "yes" : "no")}, "
-            + $"swinging at you {Attackers}, poise {_poise}, combo step {_chain}, crossbow {(s.Ranged ? $"yes (loaded {s.Loaded}, spread {ShotSpread:0.00})" : "no")}; "
+            + $"enemies near {Attackers}, incoming {(incoming == 0 ? "none" : Dir.Name(incoming))}{lands}, poise {_poise} (set at a hit), combo step {_chain}, "
+            + $"crossbow {(s.Ranged ? $"yes (loaded {s.Loaded}, spread {ShotSpread:0.00})" : "no")}; "
             + $"parries {Parries}, clashes {_clashes}, chambers {_chambers}";
     }
 
@@ -789,8 +843,22 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         var cold = world.Characters.Cold(Slot);
         if (cold?.Fighter is not { } fighter || cold.Medical is not { } medical) return;
 
-        bool coming = CombatPatches.IncomingSide(Combat, world, Slot, now) != 0;
-        if (coming && s.ReactTech >= 0) return;   // meeting a swing: the game's defence update has it
+        // A swing on its way, the one landing this tick included, is met: by the guard the player holds for its side (easy blocking: its own
+        // side), or, when the block roll is lost, by a guard on another side that it gets past. Kenshi's plain scan stops counting a swing on its
+        // landing tick; the guard must not turn back to the aim then, or the blow lands on the wrong side (0.9.0's lost blocks).
+        if (CombatPatches.Incoming(Combat, world, Slot, now) is { } b)
+        {
+            int want = AutoBlockAt > 0 && Attackers >= AutoBlockAt ? b.Side : GuardFor(b.Side);
+            int meet = want == b.Side && !BlockHolds(world, b.Attacker, b.Seq, b.Blow, b.Lands)
+                ? CombatPatches.BeatenGuard(Combat, fighter, medical.Prone, b.Side)
+                : CombatPatches.GuardIndex(Combat, fighter, medical.Prone, want);
+            if (meet < 0 || s.ReactTech == meet) return;   // up already (the game's defence update raised it), or none for that side
+            s.ReactTech = meet;
+            s.ReactTicks = CombatPatches.ClipTicks(Combat, world, Slot, cold, CombatPatches.Technique(Combat, meet)!);
+            s.ReactCheckTick = now;
+            if (s.ReactTicks > 0) s.ReactStart = now - (int)MathF.Ceiling(GuardHold * s.ReactTicks);   // up at once: past the half a block needs
+            return;
+        }
 
         int side = BlockDir;
         if (Mirror) side = side switch { Dir.Left => Dir.Right, Dir.Right => Dir.Left, _ => side };
@@ -808,8 +876,44 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         // Raised quickly (GuardRaiseSeconds) and held at the guard's point (past the half a block needs), so a swing that comes meets it up.
         float dt = Dt(world);
         float point = Math.Min(GuardHold, (now - BlockDownTick) * dt / GuardRaiseSeconds * GuardHold);
-        if (coming) point = GuardHold;
         if (s.ReactTicks > 0) s.ReactStart = now - (int)MathF.Ceiling(point * s.ReactTicks);
+    }
+
+    /// <summary>
+    /// Whether the held block stops this blow (the right guard for it is up). A parry press (block pressed within the parry window before the
+    /// blow lands, not while paused) always does. Otherwise Kenshi's own block roll decides, with the chance of being beaten scaled down by the
+    /// Block beaten chance setting, so a huge skill gap still tells but a good block is rewarded. One answer per blow (attacker, swing, blow),
+    /// drawn from the world seed and the blow (deterministic, hashed).
+    /// </summary>
+    public bool BlockHolds(World world, int attacker, int seq, int blow, int lands)
+    {
+        if (ParryOn && !BlockPressPaused && BlockPressTick != long.MinValue && BlockPressTick <= lands && lands - BlockPressTick <= ParryTicks)
+            return true;
+        if (attacker == _rollAttacker && seq == _rollSeq && blow == _rollBlow) return _rollHolds;
+
+        float chance = CombatPatches.KenshiBlockChance(Combat, world, Slot, attacker);
+        float beaten = chance < 0 ? 0 : Math.Clamp((100 - chance) / 100f * _beatenScale, 0, 1);
+        bool holds = beaten <= 0 || BlockRoll(world.Seed, attacker, seq, blow) >= beaten;
+        _rollAttacker = attacker;
+        _rollSeq = seq;
+        _rollBlow = blow;
+        _rollHolds = holds;
+        Detail($"block roll vs {world.Characters.Cold(attacker)?.Name}: Kenshi's block chance {chance:0}%, beaten chance {beaten * 100:0}% -> {(holds ? "holds" : "BEATEN")}");
+        return holds;
+    }
+
+    /// <summary>A number in [0, 1) from the world seed and the blow (SplitMix64), the same on every machine.</summary>
+    float BlockRoll(ulong seed, int attacker, int seq, int blow)
+    {
+        unchecked
+        {
+            ulong x = seed ^ 0x424C4F434B524F4CUL ^ ((ulong)(uint)attacker << 40) ^ ((ulong)(uint)seq << 12) ^ (uint)blow ^ ((ulong)(uint)Slot << 56);
+            x += 0x9E3779B97F4A7C15UL;
+            x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9UL;
+            x = (x ^ (x >> 27)) * 0x94D049BB133111EBUL;
+            x ^= x >> 31;
+            return (x >> 40) / (float)(1UL << 24);
+        }
     }
 
     /// <summary>Turns the hand-fought character on <paramref name="pick"/> (the combat system's own Retarget, with the player's pick kept).</summary>
@@ -855,8 +959,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     /// <summary>The guard direction (a Kenshi blow code) the player's block takes against a blow from <paramref name="side"/>.</summary>
     public int GuardFor(int side)
     {
-        // Easy blocking, and the sides the player cannot aim at (behind: 7 to 9; unknown 0; 6): the guard meets the blow.
-        if (!Directional || side is 0 or >= 6) return side;
+        // Blocking is always directional. The sides the player cannot aim at (behind: 7 to 9; unknown 0; 6): the guard meets the blow.
+        if (side is 0 or >= 6) return side;
 
         int want = BlockDir;
         if (Mirror) want = want switch { Dir.Left => Dir.Right, Dir.Right => Dir.Left, _ => want };
@@ -901,9 +1005,19 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         return new CombatMove(tech, Math.Clamp(raised, 0, 1) * GuardHold);
     }
 
+    /// <summary>Detail lines go to log.txt: the Log details (debug) setting, or a test run.</summary>
+    public bool Logging => LogDetails || InputWatch.TestChannel.On;
+
+    /// <summary>A detail line built with $"...": nothing of it is built unless <see cref="Logging"/> (see <see cref="DetailText"/>).</summary>
+    public void Detail([InterpolatedStringHandlerArgument("")] ref DetailText line)
+    {
+        if (line.On) ManualCombatMod.Log(line.Text());
+    }
+
+    /// <summary>A detail line that is a plain string. A line joined with + is built before the call: guard it with <see cref="Logging"/>.</summary>
     public void Detail(string line)
     {
-        if (LogDetails) ManualCombatMod.Log(line);
+        if (Logging) ManualCombatMod.Log(line);
     }
 
     bool Is(CharacterId id) => !id.IsNone && id.Slot == Slot && id.Generation == Generation;
@@ -949,16 +1063,19 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         _leaveUntil = long.MinValue;
         _targetLook = null;
         _attackNew = _blockDown = _blockUp = _blockTurned = _dodgeNew = _leaveNew = false;
+        _rollAttacker = -1;
+        _rollSeq = _rollBlow = 0;
+        _rollHolds = false;
     }
 
     void CopySettings(World world)
     {
         var settings = ManualCombatMod.Settings;
         float tick = Dt(world);
-        Directional = settings.DirectionalBlocking;
         Mirror = settings.MirrorGuards;
         ParryOn = settings.Parry;
         ParryTicks = Math.Max(1, (int)Math.Round(settings.ParryWindow / tick));
+        _beatenScale = (float)Math.Clamp(settings.BlockBeatenScale, 0, 1);
         _bufferTicks = Math.Max(1, (int)Math.Round(settings.AttackBuffer / tick));
         LogDetails = settings.LogDetails;
         SkipInitiative = settings.SkipInitiative;
@@ -1075,8 +1192,12 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         hasher.Add(MoveIntent);
         hasher.Add(_leaveUntil);
         hasher.Add(_retargetTick);
-        hasher.Add(Directional);
         hasher.Add(Mirror);
+        hasher.Add(_beatenScale);
+        hasher.Add(_rollAttacker);
+        hasher.Add(_rollSeq);
+        hasher.Add(_rollBlow);
+        hasher.Add(_rollHolds);
         hasher.Add(ParryOn);
         hasher.Add(ParryTicks);
         hasher.Add(_bufferTicks);

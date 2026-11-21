@@ -7,7 +7,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$wantVersion = "0.22.2-nightly.20261119"
+$wantVersion = "0.22.2-nightly.20261121"
 
 function Say($text, $color = "Gray") { Write-Host $text -ForegroundColor $color }
 

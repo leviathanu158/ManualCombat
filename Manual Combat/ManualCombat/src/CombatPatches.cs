@@ -1,12 +1,13 @@
 // Manual Combat for Meitou. GPLv3 or later.
-// The Harmony patches on Meitou's combat code (src/Meitou.Simulation/Combat, read at commit bf8d6ce, 0.22.2-nightly.20261119). Every
+// The Harmony patches on Meitou's combat code (src/Meitou.Simulation/Combat, read at commit 802c1ca, 0.22.2-nightly.20261121). Every
 // non-public member is looked up once by name; if one is missing (a newer Meitou changed it) the mod turns itself off with a log line naming
 // it, and the game plays as usual. Each patch only changes anything for the one hand-fought character (ManualCombatSystem.Controls).
 //
 // What each patch does:
 //   StartAttack (prefix)   the hand-fought character starts a swing only when the player asked for one (no swinging on its own)
 //   ChooseAttack (prefix)  ...and it is a swing in the direction the player held, when the weapon has one
-//   ChooseDefence (prefix) it blocks only while the block button is held, with the guard the player holds (or any guard on easy blocking)
+//   ChooseDefence (prefix) it blocks only while the block button is held, with the guard the player holds (or any guard on easy blocking);
+//                          Kenshi's block roll still applies, more generous (ManualCombatSystem.BlockHolds); a parry press always holds
 //   StartDefence (postfix) a block raised late still counts if it is up when the blow lands (as Meitou's "Late dodges and blocks" option)
 //   ApplyBlocked (postfix) a block pressed within the parry window staggers the attacker
 //   HasInitiative (postfix) "Skip the initiative roll": the player's press is not lost to the dice
@@ -49,8 +50,11 @@ public static class CombatPatches
     static MethodInfo s_stagger = null!;
     /// <summary>TechniqueChooser.Fits(CombatTechnique, int): whether a technique belongs to a weapon category.</summary>
     static MethodInfo s_fits = null!;
-    /// <summary>The private CombatSystem.IncomingBlow record struct's Attacker, Blow and Lands.</summary>
-    static PropertyInfo s_blowAttacker = null!, s_blowBlow = null!, s_blowLands = null!;
+    /// <summary>The private CombatSystem.IncomingBlow record struct's Attacker, Seq, Blow and Lands.</summary>
+    static PropertyInfo s_blowAttacker = null!, s_blowSeq = null!, s_blowBlow = null!, s_blowLands = null!;
+    /// <summary>Kenshi's block chance, as CombatSystem.ChooseDefence works it out: Trained, IndoorsMod, Guarding and the combat constants.</summary>
+    static MethodInfo s_trained = null!, s_indoorsMod = null!, s_guarding = null!;
+    static FieldInfo s_combatConstants = null!;
     /// <summary>Where the IncomingBlow argument sits in ChooseDefence and StartDefence.</summary>
     static int s_chooseDefenceSwing, s_startDefenceSwing;
 
@@ -121,12 +125,19 @@ public static class CombatPatches
         s_stagger = Need(AccessTools.Method(cs, "Stagger"), "CombatSystem.Stagger", missing);
         s_chooseAttack = Need(AccessTools.Method(typeof(TechniqueChooser), "ChooseAttack"), "TechniqueChooser.ChooseAttack", missing);
         s_fits = Need(AccessTools.Method(typeof(TechniqueChooser), "Fits", [typeof(CombatTechnique), typeof(int)]), "TechniqueChooser.Fits", missing);
+        s_trained = Need(AccessTools.Method(cs, "Trained", [typeof(CharacterCold), typeof(Meitou.Data.Gameplay.Bodies.StatsEnumerated)]),
+            "CombatSystem.Trained", missing);
+        s_indoorsMod = Need(AccessTools.Method(cs, "IndoorsMod", [typeof(World), typeof(int), typeof(Fighter)]), "CombatSystem.IndoorsMod", missing);
+        s_guarding = Need(AccessTools.Method(cs, "Guarding", [typeof(CharacterCold)]), "CombatSystem.Guarding", missing);
+        s_combatConstants = Need(AccessTools.Field(cs, "_combat"), "CombatSystem._combat", missing);
+        if (s_combatConstants is not null && s_combatConstants.FieldType != typeof(CombatConstants)) missing.Add("CombatSystem._combat as CombatConstants");
 
         var blowType = AccessTools.Inner(cs, "IncomingBlow");
         if (blowType is null) missing.Add("type CombatSystem.IncomingBlow");
         else
         {
             s_blowAttacker = Need(AccessTools.Property(blowType, "Attacker"), "IncomingBlow.Attacker", missing);
+            s_blowSeq = Need(AccessTools.Property(blowType, "Seq"), "IncomingBlow.Seq", missing);
             s_blowBlow = Need(AccessTools.Property(blowType, "Blow"), "IncomingBlow.Blow", missing);
             s_blowLands = Need(AccessTools.Property(blowType, "Lands"), "IncomingBlow.Lands", missing);
         }
@@ -387,6 +398,52 @@ public static class CombatPatches
             ManualCombatMod.LogException("ReactionEnds prefix", e);
             return true;
         }
+    }
+
+    /// <summary>
+    /// The swing furthest on at fighter <paramref name="slot"/>, the blow landing this tick included (Kenshi's "landing" scan; the plain scan drops a
+    /// swing on its landing tick): its attacker, attack sequence, blow, landing tick and side (a Kenshi blow code). Null with none.
+    /// </summary>
+    public static (int Attacker, int Seq, int Blow, int Lands, int Side)? Incoming(CombatSystem combat, World world, int slot, int now)
+    {
+        object swing = s_mostAdvanced.Invoke(combat, [world, slot, now, -1, true])!;
+        int attacker = (int)s_blowAttacker.GetValue(swing)!;
+        if (attacker < 0) return null;
+        return (attacker, (int)s_blowSeq.GetValue(swing)!, (int)s_blowBlow.GetValue(swing)!, (int)s_blowLands.GetValue(swing)!,
+            (int)s_blowSide.Invoke(combat, [world, slot, swing])!);
+    }
+
+    /// <summary>
+    /// Kenshi's own block chance in per cent for fighter <paramref name="i"/> against <paramref name="attacker"/>'s swing, worked out as
+    /// CombatSystem.ChooseDefence does (melee defence with the weapon's defence mod, gear bonus, indoors and guarding, against the attacker's attack
+    /// skill; the fist factor against an unarmed person). -1 when the fighter cannot block.
+    /// </summary>
+    public static float KenshiBlockChance(CombatSystem combat, World world, int i, int attacker)
+    {
+        var table = world.Characters;
+        if (table.Cold(i) is not { Fighter: { CanBlock: true, Weapon: { } weapon } fighter } cold) return -1;
+        var read = s_read(combat);
+        if ((uint)attacker >= (uint)read.Length) return -1;
+        float meleeDefence = (float)s_trained.Invoke(null, [cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.MeleeDefence])!;
+        int indoors = (int)s_indoorsMod.Invoke(null, [world, i, fighter])!;
+        bool guarding = (bool)s_guarding.Invoke(null, [cold])!;
+        var constants = (CombatConstants)s_combatConstants.GetValue(combat)!;
+        float d = DefenceFormulas.Defence(meleeDefence, weapon.Stats.DefenceMod, true, fighter.DefenceBonus + indoors, guarding);
+        float block = DefenceFormulas.BlockChance(d, read[attacker].AttackSkill, constants);
+        if (table.Cold(attacker)?.Fighter is { Unarmed: true, IsAnimal: false } && cold.Stats is { } stats)
+            block *= DefenceFormulas.FistBlockFactor(stats[Meitou.Data.Gameplay.Bodies.StatsEnumerated.MartialArts]);
+        return block;
+    }
+
+    /// <summary>A block of the fighter's weapon class for any side but <paramref name="side"/> (a guard the blow beats, as Kenshi's failed roll raises), or -1.</summary>
+    public static int BeatenGuard(CombatSystem combat, Fighter fighter, bool prone, int side)
+    {
+        int first = side switch { 1 => 2, 7 => 9, 9 => 7, _ => 1 };
+        int pick = GuardIndex(combat, fighter, prone, first);
+        if (pick >= 0) return pick;
+        foreach (int other in (ReadOnlySpan<int>)[1, 2, 3, 4, 7, 9])
+            if (other != side && other != first && (pick = GuardIndex(combat, fighter, prone, other)) >= 0) return pick;
+        return -1;
     }
 
     /// <summary>The side (a Kenshi blow code) of the swing furthest on its way at fighter <paramref name="slot"/>, 0 with none.</summary>
@@ -832,17 +889,27 @@ public static class CombatPatches
 
             object swing = __args[s_chooseDefenceSwing];
             int attacker = (int)s_blowAttacker.GetValue(swing)!;
+            int seq = (int)s_blowSeq.GetValue(swing)!;
             int blow = (int)s_blowBlow.GetValue(swing)!;
+            int lands = (int)s_blowLands.GetValue(swing)!;
             int side = BlowSide(__instance, world, i, attacker, blow);
             // A group fight (auto-block): the held guard turns to each swing's side by itself.
             int guard = mc.AutoBlockAt > 0 && mc.Attackers >= mc.AutoBlockAt ? side : mc.GuardFor(side);
 
             var fighter = cold.Fighter!;
+            bool prone = cold.Medical!.Prone;
+            // The right guard still has to win Kenshi's block roll (more generous than Kenshi's; a parry press always wins): a lost roll raises a
+            // guard on another side, which the blow gets past, as Kenshi's failed roll does.
+            if (guard == side && fighter.CanBlock && !mc.BlockHolds(world, attacker, seq, blow, lands))
+            {
+                __result = BeatenGuard(__instance, fighter, prone, side);
+                mc.Detail($"swing coming from {Dir.Name(side)}: guard beaten (the block roll lost)");
+                return false;
+            }
             int category = (int)s_movesCategory.Invoke(__instance, [fighter, fighter.TechniqueCategory])!;
-            __result = TechniqueChooser.ChooseReaction(s_techniques(__instance), category, cold.Medical!.Prone, fighter.CanBlock, guard,
+            __result = TechniqueChooser.ChooseReaction(s_techniques(__instance), category, prone, fighter.CanBlock, guard,
                 blockChancePercent: 100, dodgeChancePercent: 100, chanceRoll: 0, pickRoll: 0.5f);
-            mc.Detail($"swing coming from {Dir.Name(side)}: guard {Dir.Name(guard)}" + (guard == side ? "" : " (wrong side)")
-                + (__result < 0 ? " - no guard move for this weapon" : ""));
+            mc.Detail($"swing coming from {Dir.Name(side)}: guard {Dir.Name(guard)}{(guard == side ? "" : " (wrong side)")}{(__result < 0 ? " - no guard move for this weapon" : "")}");
             return false;
         }
         catch (Exception e)
@@ -853,7 +920,7 @@ public static class CombatPatches
     }
 
     /// <summary>The side a blow comes from as the defender stands now (CombatSystem.BlowSide).</summary>
-    static int BlowSide(CombatSystem combat, World world, int i, int attacker, int blow)
+    internal static int BlowSide(CombatSystem combat, World world, int i, int attacker, int blow)
     {
         var read = s_read(combat);
         var techniques = s_techniques(combat);
@@ -921,7 +988,7 @@ public static class CombatPatches
             long after = now - mc.BlockPressTick;
             mc.Parried(now);
             ManualCombatMod.Notify("Parry!");
-            ManualCombatMod.Log($"PARRY! attacker {a} staggered ({after} ticks after the press; parries this world: {mc.Parries})");
+            mc.Detail($"PARRY! attacker {a} staggered ({after} ticks after the press; parries this world: {mc.Parries})");
         }
         catch (Exception e)
         {

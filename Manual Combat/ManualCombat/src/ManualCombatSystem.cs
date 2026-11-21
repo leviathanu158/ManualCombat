@@ -136,7 +136,15 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     // ---- Crossbow. ----
     /// <summary>0: Kenshi chooses; 1: melee (the swap key); 2: crossbow.</summary>
     public int WeaponMode { get; private set; }
-    long _fireUntil = long.MinValue, _reloadUntil = long.MinValue;
+    long _fireUntil = long.MinValue;
+    /// <summary>The crossbow reload is held (left click on an empty crossbow, Mouse 4 out of fights, the reload key).</summary>
+    public bool ReloadHeld { get; private set; }
+    /// <summary>The reload counted on at the last Schedule (held, standing, empty): when it stops early, the checkpoint applies.</summary>
+    bool _reloadRunning;
+    /// <summary>The share of a reload that is kept once reached when the reload stops early (the rest of an unfinished reload is lost).</summary>
+    const float ReloadCheckpoint = 1f / 3;
+    /// <summary>The reload counts on now: held, and the character is not stepping (W A S D).</summary>
+    public bool ReloadGoes => ReloadHeld && MoveIntent == Vector2.Zero;
     int _lastLoaded;
     bool _emptyTold, _rangeTold;
     /// <summary>The crosshair ray of the last fire press (the shot goes along it), and whether there is one.</summary>
@@ -150,8 +158,6 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     public float ShotSpread { get; private set; }
     /// <summary>Whether a fire press is waiting for the shot.</summary>
     public bool FireAsked(long tick) => tick <= _fireUntil;
-    /// <summary>Whether a reload press is waiting for the reload to start.</summary>
-    public bool ReloadAsked(long tick) => tick <= _reloadUntil;
     /// <summary>The character uses the crossbow now (the last finished tick).</summary>
     bool Ranged => Slot >= 0 && CombatPatches.ReadSlots(Combat) is var r && Slot < r.Length && r[Slot].Ranged;
 
@@ -326,8 +332,9 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
                 case ManualBlock b when Is(b.Character) && ManualCrossbow && Ranged:
                     _steadyHeld = b.Held;   // right click with the crossbow out steadies the aim
                     break;
-                case ManualReload r when Is(r.Character) && ManualCrossbow && Ranged:
-                    AskReload(world);
+                case ManualReload r when Is(r.Character) && ManualCrossbow:
+                    if (r.Held != ReloadHeld) Detail(r.Held ? "reload held" : "reload let go");
+                    ReloadHeld = r.Held;
                     break;
                 case ManualSwap w when Is(w.Character):
                     WeaponMode = Ranged ? 1 : 2;
@@ -423,7 +430,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         FightHold.Publish(world.Commands, Slot, Generation, fighting && !leaving, leaving);
         Hud.Publish(fighting && !leaving, IncomingSide(world, now, fighting),
             fighting ? new CharacterId(s.TargetSlot, s.TargetGeneration) : CharacterId.None, s.Ranged, ShotSpread,
-            s.Loaded, world.Characters.Cold(Slot)?.Fighter?.Crossbow?.NumShots ?? 0, _steadyLevel);
+            s.Loaded, world.Characters.Cold(Slot)?.Fighter?.Crossbow?.NumShots ?? 0, _steadyLevel,
+            s.Loaded > 0 ? 1 : s.ReloadTime > 0 && s.ReloadLeft > 0 ? 1 - s.ReloadLeft / s.ReloadTime : 0, _reloadRunning);
 
         // The target button: the enemy nearest the camera's aim.
         if (_targetLook is { } look)
@@ -604,8 +612,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         // defence update, which turns the guard to the blow's side through ChooseDefence.
         HoldGuard(world, ref s, now, fighting && !leaving);
 
-        // Out of a fight an empty crossbow reloads by itself (Meitou reloads only in fights).
-        if (!fighting) ReloadOutOfFight(world, ref s);
+        // The crossbow reload: held and standing still, in or out of a fight (a third kept once reached when it stops early).
+        ReloadControl(world, ref s, fighting);
 
         // The player's own swing is never given up by itself to defend (Kenshi's abort when a blow at it is past half): only a feint gives it
         // up, and a chamber needs it to go on.
@@ -702,22 +710,12 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     void FirePress(World world, Vector2 look)
     {
         var read = CombatPatches.ReadSlots(Combat);
-        if ((uint)Slot < (uint)read.Length && read[Slot].Loaded <= 0)
-        {
-            if (read[Slot].ReloadLeft <= 0) AskReload(world);
-            return;
-        }
+        if ((uint)Slot < (uint)read.Length && read[Slot].Loaded <= 0) return;   // empty: holding the button reloads (ReloadControl)
         _fireUntil = world.Tick + (long)MathF.Ceiling(1f / Dt(world));
         _attackLook = look;
         _fireNew = true;
         _rangeTold = false;
         Detail("fire pressed");
-    }
-
-    void AskReload(World world)
-    {
-        _reloadUntil = world.Tick + (long)MathF.Ceiling(1f / Dt(world));
-        Detail("reload pressed");
     }
 
     /// <summary>The crossbow (see Schedule).</summary>
@@ -752,11 +750,10 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
                 Retarget(world, ref s, aimed, "aimed");
         }
         if (s.Loaded < _lastLoaded) _fireUntil = long.MinValue;   // the shot went
-        if (s.ReloadLeft > 0) _reloadUntil = long.MinValue;        // the reload started
         if (s.Loaded <= 0 && s.ReloadLeft <= 0 && !_emptyTold)
         {
             _emptyTold = true;
-            ManualCombatMod.Notify("Empty - click to reload");
+            ManualCombatMod.Notify("Empty - hold left click to reload");
         }
         if (s.Loaded > 0) _emptyTold = false;
         _lastLoaded = s.Loaded;
@@ -776,17 +773,37 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     }
 
     /// <summary>
-    /// The reload out of fights (Meitou reloads only in a fight, so a crossbow carried empty had to be loaded under attack): the hand-fought
-    /// character with its crossbow empty, bolts carried, both arms working, not lying down or swimming, reloads by itself for as long as Kenshi's
-    /// reload takes it (the crossbow's reload time by Crossbows and Dexterity), then takes one bolt, as a reload in a fight does. It runs on the fight
-    /// state's own reload timer, so a fight that starts meanwhile carries it on where it was. No reload animation plays out of a fight.
+    /// The crossbow reload, in and out of fights: it counts on only while the player holds it (left click on the empty crossbow in a fight, Mouse 4
+    /// out of fights, or the reload key) and stands still (no W A S D). Stopped early (let go, or stepping), a reload that got a third of the way is
+    /// kept at the third and goes on from there next time; less is lost. In a fight Meitou's own reload counts it (CombatPatches.ReloadPrefix lets it
+    /// run only now); out of a fight this does, on the same fight-state timer, so a reload carries over between the two.
     /// </summary>
-    void ReloadOutOfFight(World world, ref CombatSlot s)
+    void ReloadControl(World world, ref CombatSlot s, bool fighting)
     {
-        if (!ManualCrossbow || s.Down || s.Loaded > 0) return;
         var cold = world.Characters.Cold(Slot);
-        if (cold is null || cold.InCombat || cold.Fighter is not { Crossbow: { } x } fighter) return;
-        if (cold.Medical is not { BothArmsWork: true, Prone: false } || cold.WaterState == 3) return;
+        var x = cold?.Fighter?.Crossbow;
+        bool empty = ManualCrossbow && x is not null && s.Loaded <= 0;
+        bool goes = empty && ReloadGoes && !s.Down && cold!.Medical is { BothArmsWork: true, Prone: false } && cold.WaterState != 3;
+
+        if (_reloadRunning && !goes && empty && s.ReloadLeft > 0 && s.ReloadTime > 0)
+        {
+            float done = 1 - s.ReloadLeft / s.ReloadTime;
+            bool kept = done >= ReloadCheckpoint;
+            s.ReloadLeft = kept ? s.ReloadTime * (1 - ReloadCheckpoint) : 0;
+            Detail($"reload stopped at {done:P0}: {(kept ? "kept at a third" : "lost")}");
+        }
+        _reloadRunning = goes;
+
+        if (goes && !fighting) ReloadOutOfFight(world, ref s, cold!, x!);
+    }
+
+    /// <summary>
+    /// The reload out of fights (Meitou reloads only in a fight): as long as Kenshi's reload takes the character (the crossbow's reload time by
+    /// Crossbows and Dexterity), then one bolt is taken, as a reload in a fight does. No reload animation plays out of a fight.
+    /// </summary>
+    void ReloadOutOfFight(World world, ref CombatSlot s, CharacterCold cold, CrossbowInstance x)
+    {
+        if (cold.InCombat || cold.Fighter is not { } fighter) return;
         if (!x.InfiniteAmmo && Ammunition.FirstCarried(cold.Inventory, x.Data) < 0) return;
 
         if (s.ReloadLeft <= 0)
@@ -929,7 +946,9 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         string lands = incoming != 0 && CombatPatches.Incoming(Combat, world, Slot, (int)now) is { } b ? $" (lands in {b.Lands - now})" : "";
         return $"tick {now}, {cold?.Name} #{Slot}: {state}, target {target}, block held {(BlockHeld ? "yes" : "no")}, attack waiting {(AttackSeq >= 0 ? "yes" : "no")}, "
             + $"enemies near {Attackers}, incoming {(incoming == 0 ? "none" : Dir.Name(incoming))}{lands}, poise {_poise} (set at a hit), combo step {_chain}, "
-            + $"crossbow {(s.Ranged ? $"yes (loaded {s.Loaded}, spread {ShotSpread:0.00})" : "no")}; {EnemiesReport(world, read, now)}; "
+            + $"crossbow {(s.Ranged ? $"yes (loaded {s.Loaded}, spread {ShotSpread:0.00})" : "no")}, "
+            + $"reload {(s.Loaded > 0 ? "loaded" : s.ReloadTime > 0 && s.ReloadLeft > 0 ? $"{1 - s.ReloadLeft / s.ReloadTime:P0}" : "0%")}"
+            + $"{(ReloadHeld ? " held" : "")}{(_reloadRunning ? " running" : "")}; {EnemiesReport(world, read, now)}; "
             + $"parries {Parries}, clashes {_clashes}, chambers {_chambers}";
     }
 
@@ -1177,7 +1196,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         FeintLockUntil = long.MinValue;
         Attackers = 0;
         _chain = _lastSwingTag = _pendingLevel = 0;
-        _riposteUntil = _fireUntil = _reloadUntil = long.MinValue;
+        _riposteUntil = _fireUntil = long.MinValue;
+        ReloadHeld = _reloadRunning = false;
         NextSwingRate = 1;
         WeaponMode = 0;
         _emptyTold = _rangeTold = _lastSwingHit = _steadyHeld = HasShotRay = false;
@@ -1276,7 +1296,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         hasher.Add(_chambers);
         hasher.Add(WeaponMode);
         hasher.Add(_fireUntil);
-        hasher.Add(_reloadUntil);
+        hasher.Add(ReloadHeld);
+        hasher.Add(_reloadRunning);
         hasher.Add(_lastLoaded);
         hasher.Add(_lastSwingHit);
         hasher.Add(ShotOrigin);

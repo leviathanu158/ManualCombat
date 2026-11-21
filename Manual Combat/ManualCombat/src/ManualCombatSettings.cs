@@ -94,7 +94,7 @@ public sealed class ManualCombatSettings
 
     [Setting("Parry window (seconds)", Min = 0.05, Max = 0.6, Step = 0.05,
         Hint = "How soon before the swing lands you must press block for a parry.", VisibleWhen = nameof(Parry))]
-    public double ParryWindow { get; set; } = 0.3;
+    public double ParryWindow { get; set; } = 0.2;
 
     [Setting("Block beaten chance (x Kenshi's)", Min = 0, Max = 1, Step = 0.05,
         Hint = "A held block facing the right way can still be beaten, as in Kenshi, when the attacker's skill is well above your defence. "
@@ -170,7 +170,7 @@ public sealed class ManualCombatSettings
     public bool Chamber { get; set; } = true;
 
     [Setting("Chamber window (seconds)", Min = 0.05, Max = 0.5, Step = 0.01, SubGroup = "Combos and counters", VisibleWhen = nameof(Chamber))]
-    public double ChamberWindow { get; set; } = 0.2;
+    public double ChamberWindow { get; set; } = 0.3;
 
     [Setting("Clash and chamber sounds", SubGroup = "Combos and counters",
         Hint = "A clash or a chamber plays the game's parry sound.")]

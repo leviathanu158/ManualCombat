@@ -23,7 +23,9 @@ namespace ManualCombat;
 public static partial class InputWatch
 {
     static ModContext s_ctx = null!;
-    static ModKeyAction? s_attack, s_block;
+    static ModKeyAction? s_attack, s_block, s_dodge, s_reload;
+    /// <summary>The reload hold last sent, and left click held on an empty crossbow in a fight (a reload, not a shot).</summary>
+    static bool s_reloadSent, s_reloadByMouse;
 
     /// <summary>Manual combat on (O flips it).</summary>
     public static bool Enabled { get; private set; } = true;
@@ -87,11 +89,11 @@ public static partial class InputWatch
         // Left and right click are the game's Select and Command (taken in fights by MouseDownPrefix): these are extra keys, unbound by default.
         s_attack = c.AddKeyAction("fight-attack", "Attack (also Select in a fight)", OnAttack);
         s_block = c.AddKeyAction("fight-block", "Block, hold (also Command in a fight)", OnBlock);
-        c.AddKeyAction("fight-dodge", "Dodge", OnDodge, MouseButton.Button4);
+        s_dodge = c.AddKeyAction("fight-dodge", "Dodge (out of fights: hold to reload)", OnDodge, MouseButton.Button4);
         c.AddKeyAction("fight-target", "Switch target", OnTarget, MouseButton.Button5);
         c.AddKeyAction("fight-leave", "Leave the fight", OnLeave, Key.U);
         c.AddKeyAction("fight-swap", "Swap crossbow / melee", OnSwap, Key.X);
-        c.AddKeyAction("fight-reload", "Reload crossbow", OnReload);
+        s_reload = c.AddKeyAction("fight-reload", "Reload crossbow (hold)", OnReload);
         c.AddKeyAction("manual-toggle", "Manual combat on/off", OnToggle, Key.O);
     }
 
@@ -146,6 +148,7 @@ public static partial class InputWatch
                     Send(new ManualControl(s_controlled, false) { Tick = s_ctx.Tick });
                     s_controlled = CharacterId.None;
                     s_blockSent = false;
+                    s_reloadSent = s_reloadByMouse = false;
                     if (Enabled) ManualCombatMod.Notify("WASD off - manual combat off");
                 }
                 return;
@@ -157,6 +160,7 @@ public static partial class InputWatch
             s_controlled = first;
             s_moveSent = Vector2.Zero;
             s_blockSent = false;
+            s_reloadSent = s_reloadByMouse = false;
             Send(new ManualControl(first, true) { Tick = s_ctx.Tick });
         }
         catch (Exception e)
@@ -182,6 +186,7 @@ public static partial class InputWatch
             s_alt = input.IsDown(Key.LeftAlt) || input.IsDown(Key.RightAlt);
             if (!s_alt) TrackFlick(input.MouseDelta);
             SendFootwork(__result);
+            SendReloadHold(__result);
 
             // The block: let go (the block key; the mouse's release comes in MouseUp), or re-aimed while held.
             if (!s_blockSent) return;
@@ -202,6 +207,23 @@ public static partial class InputWatch
             ManualCombatMod.LogException("Resolve postfix", e);
         }
     }
+
+    /// <summary>
+    /// The crossbow reload is held while the crossbow is empty and: left click is held on it in a fight, Mouse 4 (the dodge key) out of fights, or the
+    /// reload key anywhere. Sent when it changes; the reload runs only while held and standing still (ManualCombatSystem.ReloadControl).
+    /// </summary>
+    static void SendReloadHold(ActionState a)
+    {
+        if (s_controlled.IsNone) return;
+        bool want = Active && Hud.HasCrossbow && Hud.Empty
+            && (s_reloadByMouse || KeyHeld(s_reload, a) || !Hud.InFight && KeyHeld(s_dodge, a));
+        if (want == s_reloadSent) return;
+        Send(new ManualReload(s_controlled, want) { Tick = s_ctx.Tick });
+        s_reloadSent = want;
+    }
+
+    static bool KeyHeld(ModKeyAction? key, ActionState a) =>
+        key is not null && (int)key.Action >= (int)InputBindings.FirstModAction && a.Held(key.Action);
 
     /// <summary>A or D: left or right (both or neither: not a side); else W overhead, S thrust; nothing: Dir.None.</summary>
     static int KeyDirection(ActionState a)
@@ -353,7 +375,8 @@ public static partial class InputWatch
             s_taken[(int)button] = true;
             __result = true;   // taken: no select, drag or order
             long tick = s_ctx.Tick;
-            if (role == 1 && Hud.Ranged && CrosshairRay(__instance) is { } ray)
+            if (role == 1 && Hud.Ranged && Hud.Empty) s_reloadByMouse = true;   // held on an empty crossbow: the reload (SendReloadHold)
+            else if (role == 1 && Hud.Ranged && CrosshairRay(__instance) is { } ray)
                 Send(new ManualShot(s_controlled, ray.Origin, ray.Direction) { Tick = tick });
             else if (role == 1) Send(new ManualAttack(s_controlled, AimNow, CameraForward()) { Tick = tick, InPause = GamePaused });
             else if (!s_blockSent)
@@ -379,6 +402,7 @@ public static partial class InputWatch
         {
             if ((int)button >= s_taken.Length || !s_taken[(int)button]) return true;
             s_taken[(int)button] = false;
+            if (FightRoleOf(button) == 1) s_reloadByMouse = false;
             if (s_blockSent && s_blockByMouse && FightRoleOf(button) == 2)
             {
                 Send(new ManualBlock(s_controlled, false, AimNow) { Tick = s_ctx.Tick });
@@ -441,10 +465,9 @@ public static partial class InputWatch
         k.Enqueue(new ManualTarget(s_controlled, CameraForward()) { Tick = k.Tick });
     }
 
+    /// <summary>The reload key is held, not pressed: read each control tick (SendReloadHold).</summary>
     static void OnReload(ModKeyContext k)
     {
-        if (!Live) return;
-        k.Enqueue(new ManualReload(s_controlled) { Tick = k.Tick });
     }
 
     static void OnSwap(ModKeyContext k)
@@ -475,6 +498,7 @@ public static partial class InputWatch
             if (!s_controlled.IsNone) k.Enqueue(new ManualControl(s_controlled, false) { Tick = k.Tick });
             s_controlled = CharacterId.None;
             s_blockSent = false;
+            s_reloadSent = s_reloadByMouse = false;
         }
     }
 

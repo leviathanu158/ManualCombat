@@ -797,14 +797,17 @@ public static class CombatPatches
         }
     }
 
-    /// <summary>Manual crossbow: an empty crossbow waits for the reload press (a reload under way runs on).</summary>
+    /// <summary>
+    /// Manual crossbow: the reload counts on only while the player holds it and stands still (ReloadGoes); otherwise it waits where it is
+    /// (ManualCombatSystem.ReloadControl keeps a third of it once reached, and drops less, when it stops early).
+    /// </summary>
     static bool ReloadPrefix(CombatSystem __instance, int i, ref CombatSlot s)
     {
         try
         {
             var mc = ManualCombatSystem.ForCombat(__instance);
-            if (mc is null || !mc.ManualCrossbow || i != mc.Slot || s.Generation != mc.Generation || s.ReloadLeft > 0) return true;
-            if (mc.ReloadAsked(mc.CurrentTick)) return true;
+            if (mc is null || !mc.ManualCrossbow || i != mc.Slot || s.Generation != mc.Generation) return true;
+            if (mc.ReloadGoes) return true;
             s.RangedState = (byte)RangedStates.Reloading;
             return false;
         }
@@ -933,8 +936,11 @@ public static class CombatPatches
             var origin = mc.ShotOrigin;
             var ray = mc.ShotDirection;
             var prev = world.Characters.Previous;
-            float along = (uint)target < (uint)prev.Length ? Vector3.Dot(prev[target].Position - origin, ray) : 0;
-            if (!(along > 5)) along = 500;   // no sensible target ahead: a far point on the ray
+            // The bolt flies from the barrel to what is under the crosshair (a body or the ground), so the reticle shows where it goes however near:
+            // the barrel sits away from the camera, and aimed at any other distance the bolt crossed the crosshair line elsewhere (parallax).
+            float? hit = CrosshairHit(world, mc.Slot, origin, ray, CrosshairReach);
+            float along = hit ?? ((uint)target < (uint)prev.Length ? Vector3.Dot(prev[target].Position - origin, ray) : 0);
+            if (!(along > 5)) along = 500;   // nothing under the crosshair and no target ahead: a far point on the ray
             var to = origin + ray * along - barrel;
             if (to.LengthSquared() < 1e-6f) return;
 
@@ -943,12 +949,60 @@ public static class CombatPatches
             var dir = RangedFormulas.Deviate(Vector3.Normalize(to), u * mc.ShotSpread, spin);
             s_pDirection.SetValue(bolt, dir);
             list[list.Count - 1] = bolt;
-            mc.Detail($"shot at the crosshair (spread {mc.ShotSpread:0.00} degrees, strayed {u * mc.ShotSpread:0.00})");
+            mc.Detail($"shot at the crosshair ({(hit is { } d ? $"at {d / 10:0.0} m under it" : "nothing under it")}, spread {mc.ShotSpread:0.00} degrees, "
+                + $"strayed {u * mc.ShotSpread:0.00})");
         }
         catch (Exception e)
         {
             ManualCombatMod.LogException("ApplyFire postfix", e);
         }
+    }
+
+    /// <summary>How far along the crosshair line a shot looks for what it aims at (units; 10 is about a metre), and where the look starts (past the
+    /// camera's boom and the shooter's own body), the ground's sampling step, and a body's height before its scale.</summary>
+    const float CrosshairReach = 2500, CrosshairFrom = 5, GroundStep = 2, BodyHeight = 18;
+
+    /// <summary>
+    /// The distance along the crosshair line (from <paramref name="origin"/>, the camera, along the unit <paramref name="ray"/>) to what is under
+    /// the crosshair: the first living character's body (an upright cylinder round its feet, its race's footprint radius wide and a body's height
+    /// tall, scaled with it; never the shooter) or the ground, whichever comes first within <paramref name="far"/>; null with nothing (the sky).
+    /// From the world's own places and ground, so every machine aims the same.
+    /// </summary>
+    static float? CrosshairHit(World world, int shooter, Vector3 origin, Vector3 ray, float far)
+    {
+        var prev = world.Characters.Previous;
+        float best = far;
+        bool found = false;
+        float flat2 = ray.X * ray.X + ray.Z * ray.Z;
+        if (flat2 > 1e-6f)
+        {
+            for (int c = 0; c < prev.Length; c++)
+            {
+                if (c == shooter || !prev[c].Alive) continue;
+                var feet = prev[c].Position;
+                // the point of the line nearest the body's upright axis, seen from above
+                float t = ((feet.X - origin.X) * ray.X + (feet.Z - origin.Z) * ray.Z) / flat2;
+                if (t < CrosshairFrom || t >= best) continue;
+                var cold = world.Characters.Cold(c);
+                float radius = cold?.Race?.PathfindFootprintRadius ?? 3, height = BodyHeight * (cold?.Medical?.ScaleK ?? 1);
+                var p = origin + ray * t;
+                float dx = p.X - feet.X, dz = p.Z - feet.Z;
+                if (dx * dx + dz * dz > radius * radius || p.Y < feet.Y || p.Y > feet.Y + height) continue;
+                best = t;
+                found = true;
+            }
+        }
+
+        // the ground, sampled along the line up to the body found
+        for (float t = CrosshairFrom; t < best; t += GroundStep)
+        {
+            var p = origin + ray * t;
+            if (p.Y > world.Walkability.TerrainHeight(p.X, p.Z)) continue;
+            best = t;
+            found = true;
+            break;
+        }
+        return found ? best : null;
     }
 
     public static ulong Mix(ulong z)

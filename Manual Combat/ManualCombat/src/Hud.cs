@@ -24,9 +24,15 @@ public static class Hud
     /// <summary>The locked-on target (none: Slot -1), packed as slot and generation for a lock-free read.</summary>
     static long s_target = -1;
 
-    static volatile bool s_ranged;
-    static float s_spread, s_steady;
+    static volatile bool s_ranged, s_reloading;
+    static float s_spread, s_steady, s_reload;
     static volatile int s_loaded, s_shots;
+
+    /// <summary>The hand-fought character carries a crossbow (in a fight or not).</summary>
+    public static bool HasCrossbow => s_shots > 0;
+
+    /// <summary>Its crossbow is empty.</summary>
+    public static bool Empty => s_shots > 0 && s_loaded <= 0;
 
     /// <summary>Whether the hand-fought character has its crossbow out (left click shoots at the crosshair).</summary>
     public static bool Ranged => s_ranged && s_inFight && ManualCombatMod.Settings.ManualCrossbow;
@@ -35,11 +41,13 @@ public static class Hud
     public static float Steady => Ranged ? Volatile.Read(ref s_steady) : 0;
 
     public static void Publish(bool inFight, int incomingSide, Meitou.Simulation.CharacterId target, bool ranged, float spread,
-        int loaded = 0, int shots = 0, float steady = 0)
+        int loaded = 0, int shots = 0, float steady = 0, float reload = 0, bool reloading = false)
     {
         s_ranged = ranged;
         Volatile.Write(ref s_spread, spread);
         Volatile.Write(ref s_steady, steady);
+        Volatile.Write(ref s_reload, reload);
+        s_reloading = reloading;
         s_loaded = loaded;
         s_shots = shots;
         s_inFight = inFight;
@@ -127,9 +135,9 @@ public static class Hud
     }
 
     /// <summary>The overlay and frame size of a DrawInterface call, or null (no overlay, covered, not in a fight).</summary>
-    static (DebugOverlay O, int W, int H, float S, Vector2 C)? Frame(object loop, object[] args)
+    static (DebugOverlay O, int W, int H, float S, Vector2 C)? Frame(object loop, object[] args, bool inFight = true)
     {
-        if (!s_inFight || !InputWatch.Active) return null;
+        if (inFight && !s_inFight || !InputWatch.Active) return null;
         if (args.Length > 1 && args[1] is true) return null;   // covered (loading)
         if (s_overlay!.GetValue(loop) is not DebugOverlay o || args.Length == 0 || args[0] is not { } size) return null;
         var t = size.GetType();
@@ -143,6 +151,7 @@ public static class Hud
         try
         {
             var settings = ManualCombatMod.Settings;
+            ReloadBarOutOfFight(__instance, __args);
             if (Frame(__instance, __args) is not { } frame) return;
             var (o, w, hgt, s, c) = frame;
             if (Ranged)
@@ -189,17 +198,7 @@ public static class Hud
         o.Rect(c.X - d - 1, c.Y - d - 1, c.X + d + 1, c.Y + d + 1, Edge);
         o.Rect(c.X - d, c.Y - d, c.X + d, c.Y + d, ReticleInk);
 
-        // Loaded: "1:1" (bolts loaded : bolts a reload holds) under the dot; red when empty.
-        int shots = s_shots;
-        if (shots > 0)
-        {
-            int loaded = s_loaded;
-            string text = $"{loaded}:{shots}";
-            float scale = Math.Max(1, 1.1f * s);
-            float x = c.X - o.MeasureText(text, scale) / 2, top = c.Y + 24 * s;
-            o.TextScaled(text, x + scale, top + scale, Edge, scale);
-            o.TextScaled(text, x, top, loaded > 0 ? ReticleInk : Red, scale);
-        }
+        ReloadBar(o, c, s);
         if (radius > d + 3)
         {
             const int n = 48;
@@ -210,6 +209,41 @@ public static class Hud
                     Math.Max(1, 1.5f * s), ReticleRing);
             }
         }
+        o.Flush(w, hgt);
+    }
+
+    static readonly Vector4 BarBack = new(0.05f, 0.04f, 0.03f, 0.7f), BarLoaded = new(0.9f, 0.86f, 0.75f, 0.9f),
+        BarSaved = new(0.6f, 0.58f, 0.52f, 0.85f), BarEmpty = new(0.95f, 0.22f, 0.15f, 0.9f);
+
+    /// <summary>
+    /// The crossbow's reload bar under the crosshair, in two steps: the notch at a third is the point a reload that stops early is kept at. Full and
+    /// pale: loaded. Filling gold: reloading (held, standing still). Grey: a reload stopped part way (what is kept). An empty bar has a red edge.
+    /// </summary>
+    static void ReloadBar(DebugOverlay o, Vector2 c, float s)
+    {
+        if (s_shots <= 0) return;
+        float progress = Math.Clamp(Volatile.Read(ref s_reload), 0, 1);
+        bool loaded = s_loaded > 0, reloading = s_reloading;
+        float half = 55 * s, height = 6 * s, top = c.Y + 26 * s, left = c.X - half, right = c.X + half;
+        float g = Math.Max(1, s);
+
+        o.Rect(left - g, top - g, right + g, top + height + g, loaded || progress > 0 ? Edge : BarEmpty);
+        o.Rect(left, top, right, top + height, BarBack);
+        if (progress > 0)
+            o.Rect(left, top, left + 2 * half * progress, top + height, loaded ? BarLoaded : reloading ? Gold : BarSaved);
+        float notch = left + 2 * half / 3;
+        o.Rect(notch - g, top - 2 * g, notch + g, top + height + 2 * g, Edge);
+    }
+
+    /// <summary>Out of a fight (no reticle): the reload bar alone, while a reload is held or one stopped part way is kept.</summary>
+    static void ReloadBarOutOfFight(object loop, object[] args)
+    {
+        if (s_inFight || !InputWatch.Active || s_shots <= 0 || s_loaded > 0) return;
+        if (!s_reloading && Volatile.Read(ref s_reload) <= 0) return;
+        if (Frame(loop, args, inFight: false) is not { } frame) return;
+        var (o, w, hgt, s, c) = frame;
+        o.Flush(w, hgt);
+        ReloadBar(o, c, s);
         o.Flush(w, hgt);
     }
 
@@ -233,7 +267,7 @@ public static class Hud
     }
 
     const string HintText = "Fight mode: W A S D step   U leaves the fight";
-    const string RangedHintText = "Crossbow: left click fires (reloads when empty)   hold right click steadies   X: melee";
+    const string RangedHintText = "Crossbow: left click fires   hold left click to reload (stand still)   hold right click steadies   X: melee";
     static readonly Vector4 HintInk = new(0.86f, 0.82f, 0.72f, 0.85f);
 
     /// <summary>The fight-mode hint: small, right-aligned at the top right, under PZA's WASD window and its tiny button.</summary>

@@ -9,7 +9,8 @@
 //   aim <overhead|left|right|thrust>   the attack direction, as a mouse flick would set it (held until changed)
 //   attack [direction]                 a left click (a swing; with the crossbow out, a shot along the crosshair)
 //   block on [direction] | block off   right click held / let go
-//   dodge | target | swap | reload | leave    Mouse 4, Mouse 5, X, the reload key, U
+//   dodge | target | swap | leave     Mouse 4, Mouse 5, X, U
+//   reload [on] | reload off           the crossbow reload held / let go (left click on an empty crossbow, Mouse 4 out of fights)
 //   report                             the manual combat state, one line
 // Presses from the channel count as live even while the game is paused, so a test can pause and step the game tick by tick (`step <n>` in the agent
 // channel) to time parries, chambers and combos exactly.
@@ -137,8 +138,11 @@ public static partial class InputWatch
                     Send(new ManualSwap(who) { Tick = tick });
                     return "ok";
                 case "reload":
-                    Send(new ManualReload(who) { Tick = tick });
-                    return "ok";
+                {
+                    bool on = a.Length < 2 || a[1].ToLowerInvariant() != "off";
+                    Send(new ManualReload(who, on) { Tick = tick });
+                    return on ? "ok, reload held" : "ok, reload let go";
+                }
                 case "leave":
                     if (s_blockSent) Send(new ManualBlock(who, false, AimNow) { Tick = tick });
                     s_blockSent = false;

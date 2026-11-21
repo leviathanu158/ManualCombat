@@ -25,7 +25,9 @@ Full background is in `ManualCombat-handover.txt` (the original claude.ai handov
   - check every reflected name and signature against the Meitou source for his version;
   - don't create duplicate static field names (this has broken the build twice);
   - don't use C# collection expressions in ternaries (`cond ? [] : x`);
-  - don't use `is var (a,b)` on nullable tuples.
+  - don't use `is var (a,b)` on nullable tuples;
+  - key action labels (AddKeyAction) are at most 48 characters on one line, or Meitou refuses to load the whole mod (0.9.13's first build).
+- After every build, start the game once and check log.txt for `manualcombat: ready`; "not loaded: failed to start" means the mod is off.
 - All world changes go through SimCommands, and ALL mod state is hashed (IStateHashed), for determinism and future multiplayer.
 
 ## His PC
@@ -82,7 +84,10 @@ Kenshi facts:
   - 0.5 s grace after any stagger.
 - **Enemy pacing**: a lost roll's yield is capped at 0.5 s, and an enemy that keeps losing Kenshi's initiative roll swings anyway after the Longest enemy wait (default 2.5 s, his choice; added 0.9.9). How many swing at you at once is **Meitou's attack slots** setting (his decision; the mod's own cap was removed in 0.9.9).
 - **Chamber safety (0.9.12)**: a landed chamber means no stagger until the chambering swing ends (ChamberSafeUntil, StaggerPrefix) and the same enemy swing's later blows are cancelled. Chamber window default stays 0.2 s; his own 0.5 was removed from his settings file at his request.
-- **Crossbow HUD and zoom (0.9.12)**: "1:1"/"0:1" under the reticle (red when empty). Zoom while steadying in PZA's shoulder and first-person views (Zoom.cs, SandboxScenario.FollowCamera postfix Priority.Last, keeps PZA's ViewLens.s_ours in step by reflection; setting Zoom when steadied, default 0.5). Spread default 1.25 (his "slightly more"). Walking with the crossbow: the whole-body aim/reload clip is left out while the keys push (AnimationSystem.TechniqueOf postfix), so the fight walk plays; an upper-body aim over walking legs would need Meitou's clip layering changed (possible later).
+- **Crossbow aim (0.9.14)**: the bolt flies from the barrel to the point under the crosshair: the first living body (upright cylinder: race footprint radius, 18 units x scale) or the ground (TerrainHeight sampled every 2 units) along the camera ray (CombatPatches.CrosshairHit). Before, it aimed at the fight target's distance, so close up the barrel-camera offset (parallax) threw it off.
+- **Windows (0.9.13, his choice)**: parry 0.2 s, chamber 0.3 s (chamber easier, since a parry pays more).
+- **Crossbow reload (0.9.13, his design)**: held and standing still, in and out of fights (no automatic reload any more). Hold left click on an empty crossbow in a fight, Mouse 4 (the dodge key) out of fights, or the unbound reload key. Let go or step (W A S D) and it stops: progress of a third or more is kept at a third, less is lost (ManualCombatSystem.ReloadControl; in fights Meitou's Reload counts only while ReloadGoes). A two-step reload bar under the crosshair (notch at a third) replaced "1:1"; out of fights it shows while reloading or with a kept part.
+- **Crossbow HUD and zoom (0.9.12)**: "1:1"/"0:1" under the reticle (replaced by the reload bar in 0.9.13). Zoom while steadying in PZA's shoulder and first-person views (Zoom.cs, SandboxScenario.FollowCamera postfix Priority.Last, keeps PZA's ViewLens.s_ours in step by reflection; setting Zoom when steadied, default 0.5). Spread default 1.25 (his "slightly more"). Walking with the crossbow: the whole-body aim/reload clip is left out while the keys push (AnimationSystem.TechniqueOf postfix), so the fight walk plays; an upper-body aim over walking legs would need Meitou's clip layering changed (possible later).
 - **Crossbow footwork and reload (0.9.9)**: W A S D step the character with the crossbow out (Meitou steers no crossbowman; PursuitSystem.Steer postfix + Velocity prefix); no key = stand. Out of fights an empty crossbow reloads by itself on the fight state's own ReloadLeft timer (his choice: automatic), no animation.
 - **Pause**: presses made while paused can't parry, chamber or combo (the test channel is exempt).
 - **Crossbow** (needs PZA's 3rd-person shoulder view, Z: in the Normal view the screen centre sits on your own character):

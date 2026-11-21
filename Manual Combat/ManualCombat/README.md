@@ -1,4 +1,4 @@
-# Manual Combat for Meitou (v0.9.12)
+# Manual Combat for Meitou (v0.9.14)
 
 Fight with your own hands, Mount & Blade style. Built for Meitou **0.22.2-nightly.20261121**. **Needs PZA's WASD & Controller Support**: manual combat is only on while its WASD movement is on (with WASD off, or without PZA's mod, your characters fight the normal Kenshi way).
 
@@ -17,12 +17,12 @@ Manual combat follows your **first selected character** (the one PZA's mod steer
 |---|---|
 | **Flick the mouse** | Picks the side of your swing or guard: **left / right**, **up = overhead**, **down = thrust**. The last flick sticks until the next. |
 | **Left click** | **Attack** toward the aimed side. |
-| **Right click** (hold) | **Block.** The guard goes up at once and stays up as long as you hold it, swing or no swing. Pressing it just before a hit lands is a **parry**, which staggers the attacker. |
-| **Mouse button 4** | **Dodge**, any time in a fight, swing coming or not. |
+| **Right click** (hold) | **Block.** The guard goes up at once and stays up as long as you hold it, swing or no swing. Pressing it in the last 0.2 s before a hit lands is a **parry**, which staggers the attacker. |
+| **Mouse button 4** | **Dodge**, any time in a fight, swing coming or not. Out of a fight: **hold to reload** your crossbow. |
 | **Mouse button 5** | **Switch target** to the enemy nearest where the camera points. |
 | **W A S D** | **Step** around your enemy while facing it. |
 | **X** | **Swap** between your crossbow and your melee weapon. |
-| *(unbound)* | **Reload crossbow** (left click on an empty crossbow reloads too). |
+| *(unbound)* | **Reload crossbow**, hold (in a fight, holding left click on an empty crossbow reloads too). |
 | **Alt + right click** | **Use things in a fight**: does what a plain right click does out of a fight (open, loot, talk, trade, give orders at the crosshair). Your character still gets hit while it does them. Alt + left click is the game's own too. |
 | **U** | **Leave the fight**: your character drops the fight and you get normal clicks back, so you can run. |
 | **O** | Manual combat off/on. |
@@ -49,7 +49,7 @@ Start fights as usual: right-click an enemy (or use PZA's attack button), or get
 - **Riposte:** your first swing within 1.5 s of a parry plays faster.
 - **Combos:** when your swing hits, attack from a *different side* in the short timing just after the hit (0.05 s to 0.25 s after it, by default). Your swing is cut right there, Kenshi's pause after a hit is skipped, and the next swing comes out at once, a little faster. A combo is two swings at most; after it your next ordinary swing waits a short rest (0.8 s by default) once the combo ends, while blocking and dodging stay free. Too early or too late, or from the same side, and it's a normal swing after the pause.
 - **Clashing:** if your swing and an enemy's swing at you come from the **same side** (both from their right, both overhead...) and land at almost the same moment, they meet in the air. Your swing and that one enemy's stop, sparks fly and the parry sound plays; in a group fight nobody else's swing is touched. The stronger fighter (Strength, weapon skill and weapon weight) may **crush through** and land the blow anyway: "Crushed through!" when it's you, "Overpowered!" when it's them.
-- **Chambering:** attack from the **same direction** as an enemy's blow just before it lands, aimed as you would block it (a thrust against a thrust, a swing from your left against a blow at your left), and your swing turns it aside while it carries on. Your weapon has to really swing that way. It works against enemies in front of you or at your side, not from well behind. A chamber that lands keeps your swing safe: nothing staggers you until it ends, and the rest of that enemy's swing misses too. Their blow misses (and they get Kenshi's pause after a miss), with the parry sound.
+- **Chambering:** attack from the **same direction** as an enemy's blow in the last 0.3 s before it lands (a little easier than a parry's 0.2 s, since a parry pays more), aimed as you would block it (a thrust against a thrust, a swing from your left against a blow at your left), and your swing turns it aside while it carries on. Your weapon has to really swing that way. It works against enemies in front of you or at your side, not from well behind. A chamber that lands keeps your swing safe: nothing staggers you until it ends, and the rest of that enemy's swing misses too. Their blow misses (and they get Kenshi's pause after a miss), with the parry sound.
 
 ## Fair enemy pacing (manual combat only)
 
@@ -69,11 +69,13 @@ When your weapon has no swing at all from the side you aim, it swings from anoth
 
 ## Crossbows
 
-With your crossbow out in a fight a reticle shows: a dot at the crosshair and a ring for how far a bolt may stray, from your character's Crossbows and Perception skills (the **Spread** setting scales it). **Left click fires** along the crosshair; on an empty crossbow left click **reloads** (a "Reload crossbow" key can be bound too). **Hold right click to steady** the aim: the ring draws in. **X** swaps to your melee weapon and back. The enemy nearest the crosshair counts as your target: when they are beyond your crossbow's range you get "Out of range". While you hold the crossbow out, an enemy closing in no longer makes your character put it away.
+With your crossbow out in a fight a reticle shows: a dot at the crosshair and a ring for how far a bolt may stray, from your character's Crossbows and Perception skills (the **Spread** setting scales it). **Left click fires** at what is under the crosshair (the first body or the ground along it), so the reticle is right at any range, close up too. **Hold right click to steady** the aim: the ring draws in. **X** swaps to your melee weapon and back. The enemy nearest the crosshair counts as your target: when they are beyond your crossbow's range you get "Out of range". While you hold the crossbow out, an enemy closing in no longer makes your character put it away.
 
-Under the dot, **1:1** means loaded and **0:1** (red) empty (bolts loaded : bolts a reload holds).
+**Reloading is held and done standing still.** Hold left click on the empty crossbow in a fight, or **Mouse 4** out of a fight (or a "Reload crossbow" key you bind), and stand still: it takes Kenshi's reload time. Let go or step with W A S D and the reload stops: if it got **a third of the way**, that much is kept and the next hold goes on from there; less is lost. A reload carries over between fights and outside them. No reload animation plays out of a fight.
 
-Aim in PZA's over-the-shoulder view (**Z**): in the normal view the crosshair sits on your own character. Holding right click **zooms in** as the aim steadies, in PZA's over-the-shoulder and first-person views (setting *Zoom when steadied*; 1 = no zoom). **W A S D step** you with the crossbow out too, while you aim and reload, with the fight's walking animation (the aim pose comes back when you stop); with no key held you stand. **Out of a fight an empty crossbow reloads by itself** (bolts carried, both arms working), taking as long as a reload in a fight; a fight that starts meanwhile carries the reload on. No reload animation plays out of a fight.
+Under the dot a **reload bar** shows, in two steps (the notch at a third is the point that is kept): full and pale when loaded, filling gold while you reload, grey for a kept part, empty with a red edge when there is nothing in it. Out of a fight it shows while you reload or have a part kept.
+
+Aim in PZA's over-the-shoulder view (**Z**): in the normal view the crosshair sits on your own character. Holding right click **zooms in** as the aim steadies, in PZA's over-the-shoulder and first-person views (setting *Zoom when steadied*; 1 = no zoom). **W A S D step** you with the crossbow out too, with the fight's walking animation (the aim pose comes back when you stop); with no key held you stand.
 
 ## On-screen arrows
 
@@ -113,4 +115,4 @@ Licence: GPLv3 or later (it builds on Meitou, which is GPLv3).
 
 ## For testing (developers)
 
-The mod has a test channel for scripted tests through Meitou's agent channel. It is off unless the environment variable `MANUALCOMBAT_TEST_DIR` names a folder; then the mod reads command lines from `<folder>\mc.cmd` each control tick (`aim <dir>`, `attack [dir]`, `block on [dir]` / `block off`, `dodge`, `target`, `swap`, `reload`, `leave`, `report`) and appends results to `<folder>\mc.out`. See `src/TestChannel.cs`.
+The mod has a test channel for scripted tests through Meitou's agent channel. It is off unless the environment variable `MANUALCOMBAT_TEST_DIR` names a folder; then the mod reads command lines from `<folder>\mc.cmd` each control tick (`aim <dir>`, `attack [dir]`, `block on [dir]` / `block off`, `dodge`, `target`, `swap`, `reload [on]` / `reload off`, `leave`, `report`) and appends results to `<folder>\mc.out`. See `src/TestChannel.cs`.

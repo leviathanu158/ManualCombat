@@ -74,5 +74,8 @@ public sealed record ManualSwap(CharacterId Character) : SimCommand;
 /// <summary>A crossbow shot along the crosshair ray (the camera's eye and direction through the centre of the screen).</summary>
 public sealed record ManualShot(CharacterId Character, System.Numerics.Vector3 Origin, System.Numerics.Vector3 Direction) : SimCommand;
 
-/// <summary>The reload key: start reloading the crossbow.</summary>
-public sealed record ManualReload(CharacterId Character) : SimCommand;
+/// <summary>
+/// The crossbow reload held (true) or let go (false): left click held on an empty crossbow in a fight, Mouse 4 (dodge) out of fights, or the reload
+/// key. The reload runs only while held and standing still.
+/// </summary>
+public sealed record ManualReload(CharacterId Character, bool Held = true) : SimCommand;

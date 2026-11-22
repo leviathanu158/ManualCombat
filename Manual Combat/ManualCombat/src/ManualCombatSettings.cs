@@ -92,9 +92,7 @@ public sealed class ManualCombatSettings
     [Setting("Parry", Hint = "A block pressed just before the swing lands staggers the attacker.")]
     public bool Parry { get; set; } = true;
 
-    [Setting("Parry window (seconds)", Min = 0.05, Max = 0.6, Step = 0.05,
-        Hint = "How soon before the swing lands you must press block for a parry.", VisibleWhen = nameof(Parry))]
-    public double ParryWindow { get; set; } = 0.2;
+    // The parry window comes from the character's Defence (Martial Arts with fists): ManualCombatSystem.SkillWindow.
 
     [Setting("Block beaten chance (x Kenshi's)", Min = 0, Max = 1, Step = 0.05,
         Hint = "A held block facing the right way can still be beaten, as in Kenshi, when the attacker's skill is well above your defence. "
@@ -169,8 +167,7 @@ public sealed class ManualCombatSettings
         Hint = "Attack from the same side as an enemy's blow just before it lands on you and your swing turns it aside while it goes on (their blow misses).")]
     public bool Chamber { get; set; } = true;
 
-    [Setting("Chamber window (seconds)", Min = 0.05, Max = 0.5, Step = 0.01, SubGroup = "Combos and counters", VisibleWhen = nameof(Chamber))]
-    public double ChamberWindow { get; set; } = 0.3;
+    // The chamber window comes from the character's Attack (Martial Arts with fists): ManualCombatSystem.SkillWindow.
 
     [Setting("Clash and chamber sounds", SubGroup = "Combos and counters",
         Hint = "A clash or a chamber plays the game's parry sound.")]

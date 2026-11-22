@@ -312,7 +312,14 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             switch (command)
             {
                 case ManualControl c:
-                    if (c.On) Bind(c.Character);
+                    if (c.On && IsAnimal(world, c.Character))
+                    {
+                        // Animals fight with their own attacks and never block or dodge: no manual combat for them, Kenshi's own fighting.
+                        if (Slot >= 0) Release("an animal selected");
+                        ManualCombatMod.Log($"no manual combat for character {c.Character}: an animal");
+                        ManualCombatMod.Notify("Manual combat: not for animals");
+                    }
+                    else if (c.On) Bind(c.Character);
                     else if (Is(c.Character)) Release("turned off");
                     break;
                 case ManualShot shot when Is(shot.Character) && ManualCrossbow && Ranged:
@@ -378,7 +385,11 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
                     break;
                 case ManualDodge g when Is(g.Character):
                     // One dodge at a time: a press during the last one's window is ignored.
-                    if (!Dodging(world.Tick)) _dodgeNew = true;
+                    if (!Dodging(world.Tick))
+                    {
+                        _dodgeNew = true;
+                        _dodgePaused = g.InPause;
+                    }
                     break;
                 case ManualTarget t when Is(t.Character):
                     _targetLook = float.IsFinite(t.Look.X) && float.IsFinite(t.Look.Y) ? t.Look : Vector2.Zero;
@@ -410,6 +421,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         var slots = CombatPatches.WriteSlots(Combat);
         if (Slot >= slots.Length) return;
         SizeWaits(Math.Max(slots.Length, prev.Length));
+        SkillWindows(world);
         ref var s = ref slots[Slot];
         int now = (int)tick;
 
@@ -443,11 +455,19 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         }
 
         // An attack request is good until the fighter starts a swing (its AttackSeq goes up) or the buffer runs out.
+        // A perfect dodge (fists): told once its blow has gone by.
+        if (!_counterTold && tick >= _counterFrom && tick <= _counterUntil)
+        {
+            _counterTold = true;
+            ManualCombatMod.Notify("Perfect dodge!");
+        }
+
         if (_attackNew)
         {
             _attackNew = false;
             AttackSeq = s.AttackSeq;
             _attackReported = false;
+
 
             // Attack what you look at: an enemy in reach near the crosshair becomes the target (the current one too, so it stays).
             if (AutoRetarget && fighting && _attackLook != Vector2.Zero
@@ -482,7 +502,11 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             // Used: a swing started. The combo it made is now the chain.
             AttackSeq = -1;
             if (_pendingLevel > 0) ManualCombatMod.Notify($"Combo x{_pendingLevel + 1}");
-            if (NextSwingRate > 1 && tick <= _riposteUntil) ManualCombatMod.Notify("Riposte");
+            if (NextSwingRate > 1 && tick <= _riposteUntil)
+            {
+                ManualCombatMod.Notify("Riposte");
+                Detail($"riposte: the swing plays x{NextSwingRate:0.00}");
+            }
             _chain = _pendingLevel;
             _pendingLevel = 0;
             _lastSwingTag = AttackTag(AttackDir);
@@ -576,7 +600,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         // Block released: lower the guard.
         if (_blockUp)
         {
-            if (s.ReactTech >= 0 && CombatPatches.IsGuard(Combat, s.ReactTech)) s.ReactTech = -1;
+            // only a block: a dodge under way plays out (a perfect dodge is a quick tap, let go before the blow lands)
+            if (s.ReactTech >= 0 && CombatPatches.IsBlock(Combat, s.ReactTech)) s.ReactTech = -1;
             s.DefendReadyTick = Math.Min(s.DefendReadyTick, now);
         }
 
@@ -602,6 +627,21 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
                 Detail($"dodge: '{dodge.Technique.Name}' ({DodgeTicks} ticks)");
             }
             else Detail("dodge: no dodge move for this weapon");
+        }
+
+        // The dodge key pressed within the perfect-dodge window (the parry window: Defence, Martial Arts with fists) before a blow lands, its dodge
+        // avoiding that blow: a perfect dodge, as with right click and fists ("Perfect dodge!", a riposte for the next swing). Once per dodge.
+        if (Dodging(tick) && DodgeTick != _perfectDodgeOf && !_dodgePaused && ParryOn && ParryTicks > 0 && s.ReactTech >= 0 && s.ReactTicks > 0
+            && CombatPatches.IsDodge(Combat, s.ReactTech) && CombatPatches.Incoming(Combat, world, Slot, now) is { } dodged
+            && dodged.Lands >= DodgeTick && dodged.Lands - DodgeTick <= ParryTicks)
+        {
+            float at = (dodged.Lands - s.ReactStart) / (float)s.ReactTicks;
+            if (at >= HitOutcomes.DodgeFrom && at <= HitOutcomes.DodgeTo)
+            {
+                _perfectDodgeOf = DodgeTick;
+                PerfectDodge(dodged.Lands);
+                Detail($"perfect dodge (dodge key, {dodged.Lands - DodgeTick} ticks before the blow)");
+            }
         }
 
         // The enemies swinging at the character (auto-block in group fights).
@@ -821,6 +861,28 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         Detail($"reloaded out of a fight: {s.Loaded} loaded");
     }
 
+    /// <summary>
+    /// The parry and chamber windows, seconds, from a skill: none under 10, then 0.2 s (10 to 29), 0.3 s (30 to 49), 0.4 s (50 to 79) and the full
+    /// 0.5 s from 80. The parry's skill is Defence, the chamber's Attack (Martial Arts for both with fists), as the stats panel shows them
+    /// (injuries and gear included).
+    /// </summary>
+    public static float SkillWindow(float skill) => skill < 10 ? 0 : skill < 30 ? 0.2f : skill < 50 ? 0.3f : skill < 80 ? 0.4f : 0.5f;
+
+    /// <summary>The hand-fought character's parry and chamber windows from its skills now (each tick: injuries and gear change them).</summary>
+    void SkillWindows(World world)
+    {
+        if (world.Characters.Cold(Slot) is not { Stats: not null, Fighter: { } fighter } cold) return;
+        bool fists = fighter.Unarmed;
+        float defence = CombatPatches.Stat(cold, fists ? Meitou.Data.Gameplay.Bodies.StatsEnumerated.MartialArts
+            : Meitou.Data.Gameplay.Bodies.StatsEnumerated.MeleeDefence);
+        float attack = CombatPatches.Stat(cold, fists ? Meitou.Data.Gameplay.Bodies.StatsEnumerated.MartialArts
+            : Meitou.Data.Gameplay.Bodies.StatsEnumerated.MeleeAttack);
+        float dt = Dt(world);
+        ParryTicks = (int)MathF.Round(SkillWindow(defence) / dt);   // with fists: the perfect dodge's window
+        _chamberTicks = fists ? 0 : (int)MathF.Round(SkillWindow(attack) / dt);   // no chambering with fists
+        _counterTicks = (int)MathF.Round(1.5f / dt);
+    }
+
     /// <summary>The tick the chambering swing ends: no stagger before it (a chamber that lands is not punished).</summary>
     public long ChamberSafeUntil { get; private set; } = long.MinValue;
     /// <summary>The enemy whose swing was chambered, and that swing's sequence (its later blows are turned aside too).</summary>
@@ -863,7 +925,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             return;
         }
 
-        if (_attackPaused || hit.Tick - _attackPressTick > _chamberTicks || hit.Tick < _attackPressTick) return;
+        if (_chamberTicks <= 0 || _attackPaused || hit.Tick - _attackPressTick > _chamberTicks || hit.Tick < _attackPressTick) return;
         if (me.AttackTech < 0 || them.AttackTech < 0) return;
         if (CombatPatches.Technique(Combat, me.AttackTech) is not { } mine || CombatPatches.Technique(Combat, them.AttackTech) is not { } theirs) return;
         // Only a swing from the same direction as the blow turns it aside, aimed as a block against it is (a thrust by a thrust, a blow at your left by
@@ -948,7 +1010,10 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             + $"enemies near {Attackers}, incoming {(incoming == 0 ? "none" : Dir.Name(incoming))}{lands}, poise {_poise} (set at a hit), combo step {_chain}, "
             + $"crossbow {(s.Ranged ? $"yes (loaded {s.Loaded}, spread {ShotSpread:0.00})" : "no")}, "
             + $"reload {(s.Loaded > 0 ? "loaded" : s.ReloadTime > 0 && s.ReloadLeft > 0 ? $"{1 - s.ReloadLeft / s.ReloadTime:P0}" : "0%")}"
-            + $"{(ReloadHeld ? " held" : "")}{(_reloadRunning ? " running" : "")}; {EnemiesReport(world, read, now)}; "
+            + $"{(ReloadHeld ? " held" : "")}{(_reloadRunning ? " running" : "")}, parry window {ParryTicks}t, chamber window {_chamberTicks}t, "
+            + $"defence {(s.ReactTech >= 0 && CombatPatches.Technique(Combat, s.ReactTech) is { } rt ? $"'{rt.Name}' {(s.ReactTicks > 0 ? (now - s.ReactStart) / (float)s.ReactTicks : 0):0.00}" : "none")}"
+            + $"{(now < s.StunUntil ? $" stunned {s.StunUntil - now}t" : "")}{(now < s.DefendReadyTick ? $" defend ready in {s.DefendReadyTick - now}t" : "")}; "
+            + $"{EnemiesReport(world, read, now)}; "
             + $"parries {Parries}, clashes {_clashes}, chambers {_chambers}";
     }
 
@@ -1028,8 +1093,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     /// </summary>
     public bool BlockHolds(World world, int attacker, int seq, int blow, int lands)
     {
-        if (ParryOn && !BlockPressPaused && BlockPressTick != long.MinValue && BlockPressTick <= lands && lands - BlockPressTick <= ParryTicks)
-            return true;
+        if (IsPerfectPress(lands)) return true;
         if (attacker == _rollAttacker && seq == _rollSeq && blow == _rollBlow) return _rollHolds;
 
         float chance = CombatPatches.KenshiBlockChance(Combat, world, Slot, attacker);
@@ -1041,6 +1105,35 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         _rollHolds = holds;
         Detail($"block roll vs {world.Characters.Cold(attacker)?.Name}: Kenshi's block chance {chance:0}%, beaten chance {beaten * 100:0}% -> {(holds ? "holds" : "BEATEN")}");
         return holds;
+    }
+
+    /// <summary>
+    /// Block (or, with fists, the dodge) pressed within the parry window before a blow landing at <paramref name="lands"/>, not while paused: a
+    /// parry with a weapon, a perfect dodge with fists. Always holds.
+    /// </summary>
+    public bool IsPerfectPress(long lands) =>
+        ParryOn && ParryTicks > 0 && !BlockPressPaused && BlockPressTick != long.MinValue && BlockPressTick <= lands && lands - BlockPressTick <= ParryTicks;
+
+    /// <summary>The dodge key's press was made while paused (no perfect dodge from it); the dodge (its DodgeTick) a perfect dodge was counted for.</summary>
+    bool _dodgePaused;
+    long _perfectDodgeOf = long.MinValue;
+
+    /// <summary>A perfect dodge (fists) against the blow landing at _counterFrom: "Perfect dodge!" once it has gone by.</summary>
+    long _counterFrom = long.MinValue, _counterUntil = long.MinValue;
+    bool _counterTold;
+    /// <summary>How long after the dodged blow its riposte lasts (1.5 s, as a parry's).</summary>
+    int _counterTicks;
+
+    /// <summary>
+    /// A perfect dodge was chosen against a blow landing at <paramref name="lands"/>: the dodge plays out, and a swing started within the
+    /// riposte time after the blow plays faster (the Riposte speed, as after a parry; with Combos on).
+    /// </summary>
+    public void PerfectDodge(long lands)
+    {
+        _counterFrom = lands;
+        _counterUntil = lands + _counterTicks;
+        _counterTold = false;
+        _riposteUntil = Math.Max(_riposteUntil, _counterUntil);
     }
 
     /// <summary>A number in [0, 1) from the world seed and the blow (SplitMix64), the same on every machine.</summary>
@@ -1165,6 +1258,14 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
 
     static float Dt(World world) => world.TickSeconds > 0 ? world.TickSeconds : 1f / 30;
 
+    /// <summary>Whether <paramref name="id"/> is an animal (Kenshi's animal races and creatures: CharacterFacts.Animal).</summary>
+    static bool IsAnimal(World world, CharacterId id)
+    {
+        var prev = world.Characters.Previous;
+        if (id.IsNone || (uint)id.Slot >= (uint)prev.Length || prev[id.Slot].Generation != id.Generation) return false;
+        return world.Characters.Cold(id.Slot) is { } cold && Meitou.Simulation.Bodies.CharacterFacts.Animal(cold);
+    }
+
     void Bind(CharacterId id)
     {
         if (id.IsNone || Is(id)) return;
@@ -1212,6 +1313,10 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         Array.Fill(_waitLast, -1);
         ChamberSafeUntil = long.MinValue;
         _chamberedBy = _chamberedSeq = -1;
+        _counterFrom = _counterUntil = long.MinValue;
+        _counterTold = false;
+        _dodgePaused = false;
+        _perfectDodgeOf = long.MinValue;
     }
 
     void CopySettings(World world)
@@ -1220,7 +1325,6 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         float tick = Dt(world);
         Mirror = settings.MirrorGuards;
         ParryOn = settings.Parry;
-        ParryTicks = Math.Max(1, (int)Math.Round(settings.ParryWindow / tick));
         _beatenScale = (float)Math.Clamp(settings.BlockBeatenScale, 0, 1);
         _bufferTicks = Math.Max(1, (int)Math.Round(settings.AttackBuffer / tick));
         LogDetails = settings.LogDetails;
@@ -1250,7 +1354,6 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         ClashOn = settings.Clash;
         _clashTicks = Math.Max(1, (int)Math.Round(settings.ClashWindow / tick));
         ChamberOn = settings.Chamber;
-        _chamberTicks = Math.Max(1, (int)Math.Round(settings.ChamberWindow / tick));
         ManualCrossbow = settings.ManualCrossbow;
         HyperArmorOn = settings.HyperArmor;
         _poiseScale = (float)Math.Clamp(settings.PoiseScale, 0, 3);
@@ -1349,6 +1452,12 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         hasher.Add(Mirror);
         hasher.Add(_beatenScale);
         hasher.Add(ChamberSafeUntil);
+        hasher.Add(_counterFrom);
+        hasher.Add(_counterUntil);
+        hasher.Add(_counterTold);
+        hasher.Add(_counterTicks);
+        hasher.Add(_dodgePaused);
+        hasher.Add(_perfectDodgeOf);
         hasher.Add(_chamberedBy);
         hasher.Add(_chamberedSeq);
         hasher.Add(_rollAttacker);

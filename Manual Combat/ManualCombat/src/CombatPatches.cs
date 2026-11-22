@@ -537,18 +537,28 @@ public static class CombatPatches
     /// <summary>
     /// Kenshi's own block chance in per cent for fighter <paramref name="i"/> against <paramref name="attacker"/>'s swing, worked out as
     /// CombatSystem.ChooseDefence does (melee defence with the weapon's defence mod, gear bonus, indoors and guarding, against the attacker's attack
-    /// skill; the fist factor against an unarmed person). -1 when the fighter cannot block.
+    /// skill; the fist factor against an unarmed person). For a fighter that cannot block (fists): its dodge chance from Martial Arts instead.
+    /// -1 when there is none to work out.
     /// </summary>
     public static float KenshiBlockChance(CombatSystem combat, World world, int i, int attacker)
     {
         var table = world.Characters;
-        if (table.Cold(i) is not { Fighter: { CanBlock: true, Weapon: { } weapon } fighter } cold) return -1;
+        if (table.Cold(i) is not { Fighter: { } fighter, Medical: { } medical } cold) return -1;
         var read = s_read(combat);
         if ((uint)attacker >= (uint)read.Length) return -1;
-        float meleeDefence = (float)s_trained.Invoke(null, [cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.MeleeDefence])!;
-        int indoors = (int)s_indoorsMod.Invoke(null, [world, i, fighter])!;
         bool guarding = (bool)s_guarding.Invoke(null, [cold])!;
         var constants = (CombatConstants)s_combatConstants.GetValue(combat)!;
+
+        // A fighter that cannot block dodges: Kenshi's dodge chance from Martial Arts, slowed by load and bad legs (ChooseDefence's own formula).
+        if (!fighter.CanBlock)
+        {
+            float effective = DefenceFormulas.EffectiveDefence(Stat(cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.MartialArts),
+                fighter.EncumbranceFactor, Meitou.Simulation.Bodies.Speed.LegFactor(medical), fighter.DefenceBonus, guarding);
+            return DefenceFormulas.BlockChance(effective, read[attacker].AttackSkill, constants, 0, 95);
+        }
+        if (fighter.Weapon is not { } weapon) return -1;
+        float meleeDefence = (float)s_trained.Invoke(null, [cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.MeleeDefence])!;
+        int indoors = (int)s_indoorsMod.Invoke(null, [world, i, fighter])!;
         float d = DefenceFormulas.Defence(meleeDefence, weapon.Stats.DefenceMod, true, fighter.DefenceBonus + indoors, guarding);
         float block = DefenceFormulas.BlockChance(d, read[attacker].AttackSkill, constants);
         if (table.Cold(attacker)?.Fighter is { Unarmed: true, IsAnimal: false } && cold.Stats is { } stats)
@@ -1080,6 +1090,25 @@ public static class CombatPatches
 
             var fighter = cold.Fighter!;
             bool prone = cold.Medical!.Prone;
+
+            // Fists (or a weapon that cannot block): the held right click dodges. Kenshi's dodge roll decides, failing less often than in Kenshi
+            // (Block beaten chance); a perfect dodge (pressed within the parry window, from Martial Arts) always works and lets the next attack
+            // come at once (ManualCombatSystem.PerfectDodge).
+            if (!fighter.CanBlock)
+            {
+                bool perfect = mc.IsPerfectPress(lands);
+                if (!mc.BlockHolds(world, attacker, seq, blow, lands))
+                {
+                    __result = -1;
+                    mc.Detail("dodge beaten (the dodge roll lost)");
+                    return false;
+                }
+                __result = DodgeTechnique(__instance, fighter, prone, Roll(world.Tick))?.Index ?? -1;
+                if (perfect && __result >= 0) mc.PerfectDodge(lands);
+                mc.Detail($"swing coming: {(perfect ? "perfect " : "")}dodge{(__result < 0 ? " - no dodge move" : "")}");
+                return false;
+            }
+
             // The right guard still has to win Kenshi's block roll (more generous than Kenshi's; a parry press always wins): a lost roll raises a
             // guard on another side, which the blow gets past, as Kenshi's failed roll does.
             if (guard == side && fighter.CanBlock && !mc.BlockHolds(world, attacker, seq, blow, lands))
@@ -1149,7 +1178,7 @@ public static class CombatPatches
         {
             var mc = ManualCombatSystem.For(world);
             if (mc is null || !mc.Controls(world, d)) return;
-            if (!mc.ParryOn || mc.BlockPressTick == long.MinValue || mc.BlockPressPaused || now - mc.BlockPressTick > mc.ParryTicks)
+            if (!mc.ParryOn || mc.ParryTicks <= 0 || mc.BlockPressTick == long.MinValue || mc.BlockPressPaused || now - mc.BlockPressTick > mc.ParryTicks)
             {
                 mc.Detail("blocked");
                 return;

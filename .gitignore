@@ -6,3 +6,5 @@
 *.zip
 # separate tool (SteamCMD upload pipeline), not part of the mod
 kenshi-workshop-pipeline/
+# Workshop page texts (pasted by hand, not part of the mod)
+Workshop/

@@ -456,7 +456,7 @@ public static partial class InputWatch
     static void OnDodge(ModKeyContext k)
     {
         if (!Live) return;
-        k.Enqueue(new ManualDodge(s_controlled) { Tick = k.Tick });
+        k.Enqueue(new ManualDodge(s_controlled) { Tick = k.Tick, InPause = GamePaused });
     }
 
     static void OnTarget(ModKeyContext k)

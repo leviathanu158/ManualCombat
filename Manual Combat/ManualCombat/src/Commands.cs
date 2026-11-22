@@ -60,7 +60,11 @@ public sealed record ManualBlock(CharacterId Character, bool Held, int Direction
 public sealed record ManualMove(CharacterId Character, System.Numerics.Vector2 Direction) : SimCommand;
 
 /// <summary>The dodge button.</summary>
-public sealed record ManualDodge(CharacterId Character) : SimCommand;
+public sealed record ManualDodge(CharacterId Character) : SimCommand
+{
+    /// <summary>Pressed while the game was paused: a dodge, but no perfect dodge from it.</summary>
+    public bool InPause { get; init; }
+}
 
 /// <summary>The target button: switch to the enemy nearest the camera's aim (<paramref name="Look"/>: the camera's flat forward, X and Z).</summary>
 public sealed record ManualTarget(CharacterId Character, System.Numerics.Vector2 Look) : SimCommand;

@@ -1,0 +1,166 @@
+HOW TO TEST A MEITOU CODE MOD ON LEVIATHANU'S PC
+(general directions for a Claude Code chat; written 2026-11-22 from the Manual Combat work)
+
+=====================================================================
+0. WHO YOU ARE WORKING WITH
+=====================================================================
+- Leviathanu has no coding knowledge. You write all the code, build it and test it; he tests by
+  hand in game and makes the design decisions.
+- Use plain words and short replies. Ask him about real design choices; otherwise pick a sensible
+  default and say what you picked.
+- Don't write into his Meitou install (C:\Kenshi_Meitou\versions\...) unless he asks. Installing a
+  mod into Kenshi\mods\<ModName> is fine. The control folder C:\Kenshi_Meitou\ctl is for tests and
+  is fine to use.
+- Git is NOT on PATH: use "C:\Program Files\Git\cmd\git.exe". In PowerShell 5.1 write the commit
+  message to a file and use  git commit -F <file>  (here-strings get split).
+
+=====================================================================
+1. PATHS
+=====================================================================
+Meitou install ......... C:\Kenshi_Meitou
+Current Meitou version . C:\Kenshi_Meitou\versions\0.22.2-nightly.20261121\
+                         (check C:\Kenshi_Meitou\versions for a newer one; he updates often)
+Game log ............... <version folder>\log.txt   (next to MeitouClient.exe)
+Meitou source (read-only reference, matches the installed build):
+                         C:\KenshiRef\MeitouClient
+                         Docs worth reading: docs\agent-playtest.md (the agent channel)
+Kenshi ................. C:\Steam Games\steamapps\common\Kenshi
+Mods install to ........ C:\Steam Games\steamapps\common\Kenshi\mods\<ModName>
+Workshop mods .......... C:\Steam Games\steamapps\workshop\content\233860
+Launcher config ........ %LOCALAPPDATA%\Meitou\launcher.json  (InstallFolder, KenshiPath)
+His settings ........... %LOCALAPPDATA%\Meitou\meitou.user.json  (mod settings live here too)
+Saves .................. %LOCALAPPDATA%\Meitou\save\   (the test save is "mctest")
+Control folder ......... C:\Kenshi_Meitou\ctl
+meitou-tools.exe ....... in the version folder (probe, mod-check)
+.NET SDK ............... 11.0.100 (10.0.100 also installed)
+Working example of a full mod with build script and test channel:
+                         C:\KenshiDev\Manual Combat\ManualCombat\  (build.ps1, src\TestChannel.cs)
+
+=====================================================================
+2. RULES BEFORE ANY TEST
+=====================================================================
+- ALWAYS read the Meitou source for his installed version before using or reflecting into any
+  Meitou API. Names change between nightlies. If a reflected name is missing, the mod should turn
+  itself off with a log line instead of crashing.
+- meitou.json: "gameVersion": ">=0.22.2" with NO upper cap.
+- Bump the version on every build he gets: meitou.json "version", the .csproj <Version> and the
+  README.
+- Key action labels (AddKeyAction) must be 48 characters or fewer, or Meitou refuses to load the
+  whole mod.
+- Close the game before building: a running game locks the mod DLL and the install copy fails.
+- All world changes go through SimCommands, and all mod state is hashed (IStateHashed), for
+  determinism and future multiplayer.
+
+=====================================================================
+3. STARTING A TEST RUN
+=====================================================================
+Important facts:
+- There is NO --headless. The game window must stay visible, or loading stalls.
+- Loading a save takes about 4-5 minutes.
+- Start Meitou with the WORKING DIRECTORY %LOCALAPPDATA%\Meitou (as the launcher does). Meitou reads
+  meitou.user.json from the working directory; started anywhere else, it uses the wrong settings
+  file (and may create a stray one).
+- KENSHI_PATH must be set.
+- C:\Kenshi_Meitou\test\start-test-game.bat is OUT OF DATE (it points at an old version folder and
+  uses --continue). Use a script like the one below instead.
+
+start.ps1 (put it in your scratchpad; change $v, the save and the mod check to suit):
+
+  $s = Split-Path -Parent $MyInvocation.MyCommand.Path
+  $D = "C:\Kenshi_Meitou\ctl"
+  Remove-Item "$D\cmd", "$D\out" -ErrorAction SilentlyContinue
+  $v = "C:\Kenshi_Meitou\versions\0.22.2-nightly.20261121"
+  $env:KENSHI_PATH = "C:\Steam Games\steamapps\common\Kenshi"
+  $p = Start-Process -FilePath "$v\MeitouClient.exe" -WorkingDirectory "$env:LOCALAPPDATA\Meitou" `
+       -ArgumentList @("--windowed", "--load", "`"$env:LOCALAPPDATA\Meitou\save\mctest`"",
+                       "--control-dir", "`"$D`"") -PassThru
+  $p.Id | Out-File -Encoding ascii "$D\game.pid"; "pid $($p.Id)"
+  Start-Sleep 5
+  & "$s\c.ps1" -Timeout 430 wait-for loaded=true timeout=420
+  # did the mod start? (replace "yourmodid")
+  Get-Content "$v\log.txt" | Select-String 'yourmodid' | Select-Object -Last 5 | ForEach-Object Line
+  & "$s\c.ps1" pause
+
+Run it in the background (it takes minutes). Then check log.txt:
+- Mod lines look like:  mod       <modid>: ...
+- "not loaded: failed to start" means the mod is OFF. Find the reason in the lines around it.
+- A good habit: have the mod log one "<modid>: ready" line at the end of Initialize and check for
+  it after every build.
+
+=====================================================================
+4. THE AGENT CHANNEL (Meitou's built-in remote control)
+=====================================================================
+- Write "<id> <console command>" to C:\Kenshi_Meitou\ctl\cmd ATOMICALLY: write a temp file in the
+  same folder, then rename it to "cmd". Wait until the old "cmd" is gone before writing a new one.
+- Results are appended to ctl\out as JSON lines: {"id":<id>,"ok":true,...}. Skip lines that are
+  "event" lines.
+- Useful commands: state, observe --brief, select, spawn-at x z [record] --aggro, order attack,
+  pause, step <n>, resume, heal, kill, tp, give, screenshot, quit, wait-for loaded=true.
+  The full list is in C:\KenshiRef\MeitouClient\docs\agent-playtest.md.
+- Pause + "step <n>" advances the world exactly n ticks: the way to time things precisely.
+- Give items by record ID (names with spaces get split).
+- "quit" closes the game cleanly. Do it before rebuilding.
+
+c.ps1 (agent channel client: .\c.ps1 [-Timeout s] <command words...>):
+
+  [CmdletBinding(PositionalBinding = $false)]
+  param([double]$Timeout = 5, [Parameter(ValueFromRemainingArguments = $true)][string[]]$Words)
+  $D = "C:\Kenshi_Meitou\ctl"
+  $cmdText = ($Words -join ' ')
+  $id = [string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  $t0 = Get-Date
+  while (Test-Path "$D\cmd") { if (((Get-Date) - $t0).TotalSeconds -gt $Timeout) { "TIMEOUT waiting for cmd slot"; exit 2 }; Start-Sleep -Milliseconds 100 }
+  $tmp = "$D\.t$id"
+  [System.IO.File]::WriteAllText($tmp, "$id $cmdText`n")
+  Move-Item $tmp "$D\cmd"
+  $t0 = Get-Date
+  while (((Get-Date) - $t0).TotalSeconds -lt $Timeout) {
+      if (Test-Path "$D\out") {
+          $l = Select-String -Path "$D\out" -Pattern "^\{`"id`":$id," | Select-Object -First 1
+          if ($l) { $l.Line; if ($l.Line -like '*"ok":true*') { exit 0 } else { exit 1 } }
+      }
+      Start-Sleep -Milliseconds 100
+  }
+  "TIMEOUT ($cmdText)"; exit 2
+
+=====================================================================
+5. A TEST CHANNEL INSIDE YOUR OWN MOD (recommended)
+=====================================================================
+The agent channel can't press keys, click the mouse or use other mods' panels. For anything the
+player does by hand, give the mod its own file-driven test input, as Manual Combat does
+(src\TestChannel.cs):
+- The mod reads lines from a file (Manual Combat: ctl\mc.cmd, folder from the env var
+  MANUALCOMBAT_TEST_DIR) and writes one result line each to an out file (ctl\mc.out).
+- Only active when that env var is set, so players never see it.
+- Commands should do exactly what the key or mouse would (send the same SimCommand), plus a
+  "report" command that prints the mod's state in one line.
+- Keep test reports out of log.txt unless detail logging is on.
+Combined with pause + step, this lets you run exact, repeatable scenario tests. He likes scenario
+tests and fuzzing through a test channel.
+
+=====================================================================
+6. THE TEST SAVE (mctest)
+=====================================================================
+- Su (character c:0.0, all skills 100) and Zagan (c:1.0, armed; may count as an animal).
+- It is in a secluded spot, so no town guards join fights.
+- PZA's "WASD & Controller Support" mod is in his list and comes on at start.
+- If a test needs a different setup (items, characters, place), ASK HIM to change the save rather
+  than saving over it yourself. Spawning, giving items and teleporting through the agent channel
+  are fine during a run.
+
+=====================================================================
+7. DETERMINISM CHECK
+=====================================================================
+  "<version folder>\meitou-tools.exe" mod-check "%LOCALAPPDATA%\Meitou\save\mctest"
+This runs code mods headless and compares state hashes. Run it before handing over a build that
+changes simulation state.
+
+=====================================================================
+8. HANDING OVER A BUILD
+=====================================================================
+1. Build (installs into Kenshi\mods\<ModName>). The game must be closed.
+2. Start a test run and confirm the mod's "ready" line in log.txt.
+3. Run your scenario tests and report the results in plain words: what was tested, what passed, and
+   what still needs his hands (anything with real mouse, camera or other mods' UI).
+4. Commit only when he asks. End commit messages with:
+   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

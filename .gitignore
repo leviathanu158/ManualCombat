@@ -8,3 +8,6 @@
 kenshi-workshop-pipeline/
 # Workshop page texts (pasted by hand, not part of the mod)
 Workshop/
+
+# separate mod with its own repo
+Radiant Quests/

@@ -17,6 +17,8 @@ public static class Hud
     // Published by ManualCombatSystem.Schedule each tick, read on the interface's thread.
     static volatile bool s_inFight;
     static volatile int s_incoming;
+    /// <summary>The incoming swing is an animal's (the bigger warning).</summary>
+    static volatile bool s_incomingAnimal;
 
     /// <summary>Whether the hand-fought character is in a fight now (the in-fight controls and the arrows).</summary>
     public static bool InFight => s_inFight;
@@ -41,9 +43,10 @@ public static class Hud
     public static float Steady => Ranged ? Volatile.Read(ref s_steady) : 0;
 
     public static void Publish(bool inFight, int incomingSide, Meitou.Simulation.CharacterId target, bool ranged, float spread,
-        int loaded = 0, int shots = 0, float steady = 0, float reload = 0, bool reloading = false)
+        int loaded = 0, int shots = 0, float steady = 0, float reload = 0, bool reloading = false, bool incomingAnimal = false)
     {
         s_ranged = ranged;
+        s_incomingAnimal = incomingAnimal;
         Volatile.Write(ref s_spread, spread);
         Volatile.Write(ref s_steady, steady);
         Volatile.Write(ref s_reload, reload);
@@ -122,8 +125,51 @@ public static class Hud
         }
     }
 
+    // The game's pointer in fights: PZA's views pin it at the centre (Meitou's own pointer is their crosshair spot), so the action pointer (a
+    // sword over an enemy...) sat on the crosshair. While the hand-fought character fights and PZA's mouse look holds the pointer, it is not
+    // drawn; Alt, a window or a menu end PZA's mouse look (PZA.WASDControl.Meitou.Look.On), and the pointer shows again.
+    static System.Reflection.PropertyInfo? s_pzaLook;
+    static bool s_pzaLookSought;
+
+    static bool PzaLookOn()
+    {
+        if (!s_pzaLookSought)
+        {
+            s_pzaLookSought = true;
+            s_pzaLook = AccessTools.TypeByName("PZA.WASDControl.Meitou.Look") is { } look ? AccessTools.Property(look, "On") : null;
+        }
+        return s_pzaLook?.GetValue(null) is true;
+    }
+
+    /// <summary>PointerView.DrawPointer / DrawPointerBeside prefix: skipped while the pointer is hidden in a fight.</summary>
+    static bool PointerPrefix()
+    {
+        try
+        {
+            return !(s_inFight && InputWatch.Active && ManualCombatMod.Settings.HidePointerInFights && PzaLookOn());
+        }
+        catch (Exception e)
+        {
+            ManualCombatMod.LogException("pointer prefix", e);
+            return true;
+        }
+    }
+
+    static string PatchPointer(Harmony h)
+    {
+        var view = AccessTools.TypeByName("Meitou.Game.Ui.PointerView");
+        var draw = view is null ? null : AccessTools.Method(view, "DrawPointer");
+        var beside = view is null ? null : AccessTools.Method(view, "DrawPointerBeside");
+        if (draw is null) return "hiding the pointer in fights unavailable in this Meitou version (PointerView.DrawPointer)";
+        var prefix = new HarmonyMethod(AccessTools.Method(typeof(Hud), nameof(PointerPrefix)));
+        h.Patch(draw, prefix: prefix);
+        if (beside is not null) h.Patch(beside, prefix: prefix);
+        return "patched PointerView.DrawPointer (pointer hidden in fights in PZA's views)";
+    }
+
     public static string Patch(Harmony h)
     {
+        ManualCombatMod.Log(PatchPointer(h));
         var loop = AccessTools.TypeByName("Meitou.Game.Host.GameLoop");
         var draw = loop is null ? null : AccessTools.Method(loop, "DrawInterface");
         s_overlay = loop is null ? null : AccessTools.Field(loop, "_overlay");
@@ -169,7 +215,15 @@ public static class Hud
             if (aim != Dir.None) Arrow(o, c, aim, s, 40, 14, 10, Fade(InputWatch.Blocking ? Blue : Gold, a), outward: true, edge: true, a);
 
             if (settings.ArrowIncoming && ScreenSide(s_incoming, settings.MirrorGuards) is { } incoming)
-                Arrow(o, c, incoming, s, 66, 14, 10, Fade(Red, a), outward: false, edge: true, a);
+            {
+                if (s_incomingAnimal && settings.AnimalWarning)
+                {
+                    // An animal's attack: bigger and stronger, but always somewhat see-through.
+                    float strong = Math.Clamp(a * 1.6f, 0.55f, 0.75f);
+                    Arrow(o, c, incoming, s, 64, 19, 13, Fade(Red, strong), outward: false, edge: true, strong);
+                }
+                else Arrow(o, c, incoming, s, 66, 14, 10, Fade(Red, a), outward: false, edge: true, a);
+            }
             o.Flush(w, hgt);
         }
         catch (Exception e)
@@ -267,7 +321,7 @@ public static class Hud
     }
 
     const string HintText = "Fight mode: W A S D step   U leaves the fight";
-    const string RangedHintText = "Crossbow: left click fires   hold left click to reload (stand still)   hold right click steadies   X: melee";
+    const string RangedHintText = "Crossbow: left click fires   hold left click to reload   hold right click steadies   X: melee";
     static readonly Vector4 HintInk = new(0.86f, 0.82f, 0.72f, 0.85f);
 
     /// <summary>The fight-mode hint: small, right-aligned at the top right, under PZA's WASD window and its tiny button.</summary>

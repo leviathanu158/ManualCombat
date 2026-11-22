@@ -43,6 +43,7 @@ public sealed class ManualCombatMod : IMod
         c.Log(FightHold.Patch(c.Harmony));
         c.Log(Hud.Patch(c.Harmony));
         c.Log(Zoom.Patch(c.Harmony));
+        c.Log(UpperBody.Patch(c.Harmony));
         c.Log("ready: in a fight your selected character attacks with left click and blocks with right click, aimed by flicking the mouse; "
             + "mouse 4 dodges, mouse 5 switches target, W A S D step, U leaves the fight, O turns manual combat off/on");
     }

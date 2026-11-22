@@ -179,6 +179,7 @@ public static partial class InputWatch
         {
             s_controlTick++;
             ShowNotices();
+            SlowMo.HostTick();
             TestChannel.Poll();
             Pointer = input.MousePosition;
             s_keyDir = KeyDirection(__result);
@@ -187,6 +188,13 @@ public static partial class InputWatch
             if (!s_alt) TrackFlick(input.MouseDelta);
             SendFootwork(__result);
             SendReloadHold(__result);
+
+            // A held attack re-aimed (hold to ready): the held swing switches side.
+            if (s_attackByMouse && !s_controlled.IsNone && AimNow is var held && held != Dir.None && held != s_attackSentDir)
+            {
+                Send(new ManualAttackAim(s_controlled, held) { Tick = s_ctx.Tick });
+                s_attackSentDir = held;
+            }
 
             // The block: let go (the block key; the mouse's release comes in MouseUp), or re-aimed while held.
             if (!s_blockSent) return;
@@ -378,7 +386,13 @@ public static partial class InputWatch
             if (role == 1 && Hud.Ranged && Hud.Empty) s_reloadByMouse = true;   // held on an empty crossbow: the reload (SendReloadHold)
             else if (role == 1 && Hud.Ranged && CrosshairRay(__instance) is { } ray)
                 Send(new ManualShot(s_controlled, ray.Origin, ray.Direction) { Tick = tick });
-            else if (role == 1) Send(new ManualAttack(s_controlled, AimNow, CameraForward()) { Tick = tick, InPause = GamePaused });
+            else if (role == 1)
+            {
+                int aimed = AimNow;
+                Send(new ManualAttack(s_controlled, aimed, CameraForward()) { Tick = tick, InPause = GamePaused, Held = true });
+                s_attackByMouse = true;   // its release (MouseUp) strikes a readied swing
+                s_attackSentDir = aimed;
+            }
             else if (!s_blockSent)
             {
                 int aim = AimNow;
@@ -402,7 +416,13 @@ public static partial class InputWatch
         {
             if ((int)button >= s_taken.Length || !s_taken[(int)button]) return true;
             s_taken[(int)button] = false;
-            if (FightRoleOf(button) == 1) s_reloadByMouse = false;
+            if (FightRoleOf(button) == 1)
+            {
+                s_reloadByMouse = false;
+                if (s_attackByMouse && !s_controlled.IsNone)
+                    Send(new ManualAttackRelease(s_controlled) { Tick = s_ctx.Tick, InPause = GamePaused });
+                s_attackByMouse = false;
+            }
             if (s_blockSent && s_blockByMouse && FightRoleOf(button) == 2)
             {
                 Send(new ManualBlock(s_controlled, false, AimNow) { Tick = s_ctx.Tick });
@@ -417,6 +437,11 @@ public static partial class InputWatch
             return true;
         }
     }
+
+    /// <summary>The attack (left click) is held down with the mouse: its release is sent (hold to ready).</summary>
+    static bool s_attackByMouse;
+    /// <summary>The side the held attack was last sent with (a new flick while held switches it).</summary>
+    static int s_attackSentDir;
 
     /// <summary>The roles of the mouse buttons the last fight click saw (1 attack, 2 block), for the release.</summary>
     static readonly int[] s_roles = new int[8];

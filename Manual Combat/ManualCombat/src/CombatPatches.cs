@@ -193,7 +193,7 @@ public static class CombatPatches
             lines.Add("patched CombatSystem.StartAttack");
             h.Patch(s_chooseAttack, prefix: Hook(nameof(ChooseAttackPrefix)));
             lines.Add("patched TechniqueChooser.ChooseAttack");
-            h.Patch(s_chooseDefence, prefix: Hook(nameof(ChooseDefencePrefix)));
+            h.Patch(s_chooseDefence, prefix: Hook(nameof(ChooseDefencePrefix)), postfix: Hook(nameof(ChooseDefencePostfix)));
             lines.Add("patched CombatSystem.ChooseDefence");
             h.Patch(s_startDefence, postfix: Hook(nameof(StartDefencePostfix)));
             lines.Add("patched CombatSystem.StartDefence");
@@ -287,7 +287,7 @@ public static class CombatPatches
             var mc = ManualCombatSystem.For(world);
             if (mc is null || !mc.Footwork || !mc.Controls(world, i)) return;
 
-            float speed = mc.FootworkSpeed * (cold.Race?.CombatMoveSpeedMult ?? 1);
+            float speed = mc.FootworkSpeed * (cold.Race?.CombatMoveSpeedMult ?? 1) * WalkShare(mc, i);   // slower while holding a swing or with the crossbow out
             var v = mc.MoveIntent;
             if (v == Vector2.Zero)
             {
@@ -308,6 +308,29 @@ public static class CombatPatches
         }
     }
 
+    /// <summary>Per library, the reload clip of each crossbow's reload record id ("" for the default), as Meitou's AnimationSystem picks it.</summary>
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Meitou.Data.Gameplay.AnimationLibrary,
+        System.Collections.Concurrent.ConcurrentDictionary<string, int>> s_reloadClips = new();
+
+    static int ReloadClip(Meitou.Data.Gameplay.AnimationLibrary library, string? reloadAnimId)
+    {
+        var clips = s_reloadClips.GetValue(library, _ => new());
+        return clips.GetOrAdd(reloadAnimId ?? "", id =>
+        {
+            int k = id.Length > 0 ? library.IndexOfRecord(id) : -1;
+            return k >= 0 ? k : library.IndexOf(Meitou.Data.Gameplay.AnimationLibrary.RangedReloadRecord);
+        });
+    }
+
+    /// <summary>The footwork speed share: slower while holding a swing (walking readied) or with the crossbow out (aiming or reloading).</summary>
+    static float WalkShare(ManualCombatSystem mc, int i)
+    {
+        if (mc.UpperSwing) return mc.ReadiedWalkSpeed;
+        var read = s_read(mc.Combat);
+        if ((uint)i >= (uint)read.Length || !read[i].Ranged) return 1;
+        return read[i].Loaded <= 0 && mc.ReloadGoes ? mc.ReloadWalkSpeed : mc.CrossbowWalkSpeed;   // reloading: slowest; aiming and firing: slow
+    }
+
     /// <summary>The movement flags of a path held or asked for (PursuitSystem's PathFlags).</summary>
     const ushort AnyPath = (ushort)Meitou.Simulation.Movement.MoveFlags.AnyPath;
 
@@ -320,9 +343,9 @@ public static class CombatPatches
     {
         try
         {
-            if (__result || !st.Ranged || st.Down || holding || cold.Steer is not { } steer) return;
+            if (__result || st.Down || holding || cold.Steer is not { } steer) return;
             var mc = ManualCombatSystem.For(world);
-            if (mc is null || !mc.Footwork || !mc.Controls(world, i)) return;
+            if (mc is null || !mc.Footwork || !mc.Controls(world, i) || !(st.Ranged || mc.UpperSwing)) return;   // the crossbow out, or walking while holding a swing
 
             // No path chase while the keys steer: the path is dropped and the pursuit step ends here (true).
             if ((n.Flags & AnyPath) != 0)
@@ -353,9 +376,9 @@ public static class CombatPatches
             var mc = ManualCombatSystem.For(world);
             if (mc is null || !mc.Footwork || !mc.Controls(world, i)) return true;
             var read = s_read(mc.Combat);
-            if ((uint)i >= (uint)read.Length || !read[i].Ranged) return true;
+            if ((uint)i >= (uint)read.Length || !read[i].Ranged && !mc.UpperSwing) return true;
 
-            __result = mc.MoveIntent * mc.FootworkSpeed * (cold.Race?.CombatMoveSpeedMult ?? 1);
+            __result = mc.MoveIntent * mc.FootworkSpeed * (cold.Race?.CombatMoveSpeedMult ?? 1) * WalkShare(mc, i);
             face = StepInDirection(mc.Combat, world, i) ?? Vector2.Zero;
             return false;
         }
@@ -371,18 +394,43 @@ public static class CombatPatches
     /// with W A S D slid along in its aim pose. While the keys push, the pose is left out and the fight's own walk plays; it comes back when the
     /// character stands (a reload keeps counting meanwhile). From the simulation's own state (the footwork wanted), so it is the same everywhere.
     /// </summary>
-    static void TechniqueOfPostfix(World world, Meitou.Simulation.CharacterId id, ref ValueTuple<int, float> __result)
+    static void TechniqueOfPostfix(Meitou.Simulation.Movement.AnimationSystem __instance, World world, Meitou.Simulation.CharacterId id,
+        ref ValueTuple<int, float> __result)
     {
         try
         {
-            if (__result.Item1 < 0) return;
+            // The reload out of a fight (Meitou plays crossbow poses only in fights): the crossbow's own reload clip at the reload's progress, its
+            // upper-body copy while walking.
+            if (__result.Item1 < 0)
+            {
+                var me = ManualCombatSystem.For(world);
+                if (me is null || me.OutOfFightReload < 0 || !me.Controls(world, id.Slot)) return;
+                int clip = ReloadClip(__instance.Library, world.Characters.Cold(id.Slot)?.Fighter?.Crossbow?.Data.ReloadAnimId);
+                if (clip < 0) return;
+                int walking = me.MoveIntent != Vector2.Zero ? UpperBody.CopyOf(__instance.Library, clip) : -1;
+                __result = (walking >= 0 ? walking : clip, me.OutOfFightReload);
+                return;
+            }
             var mc = ManualCombatSystem.For(world);
             if (mc is null || !mc.Footwork || mc.MoveIntent == Vector2.Zero || !mc.Controls(world, id.Slot)) return;
+
+            // Walking while holding a swing (UpperBody): the swing's upper-body copy, at the same point, over the legs' walk.
+            if (mc.UpperSwing)
+            {
+                int copy = UpperBody.CopyOf(__instance.Library, __result.Item1);
+                if (copy >= 0) __result = (copy, __result.Item2);
+                return;
+            }
+
             var read = s_read(mc.Combat);
             if ((uint)id.Slot >= (uint)read.Length) return;
             ref readonly var s = ref read[id.Slot];
             if (!s.Ranged || s.AttackTech >= 0 || s.ReactTech >= 0) return;   // only the aim or reload pose, never a swing, block or dodge
-            __result = (-1, 0);
+            // The pose's upper-body copy over the legs' walk (UpperBody); a pose already on the upper body stays; with neither, the pose is left out.
+            int pose = UpperBody.CopyOf(__instance.Library, __result.Item1);
+            if (pose >= 0) __result = (pose, __result.Item2);
+            else if ((uint)__result.Item1 >= (uint)__instance.Library.Definitions.Count
+                || __instance.Library.Definitions[__result.Item1].Area == Meitou.Data.Gameplay.AnimationArea.All) __result = (-1, 0);
         }
         catch (Exception e)
         {
@@ -578,11 +626,15 @@ public static class CombatPatches
     }
 
     /// <summary>The side (a Kenshi blow code) of the swing furthest on its way at fighter <paramref name="slot"/>, 0 with none.</summary>
-    public static int IncomingSide(CombatSystem combat, World world, int slot, int now)
+    public static int IncomingSide(CombatSystem combat, World world, int slot, int now) => IncomingSideFrom(combat, world, slot, now).Side;
+
+    /// <summary>The side and attacker of the swing furthest on its way at fighter <paramref name="slot"/>; side 0 and attacker -1 with none.</summary>
+    public static (int Side, int Attacker) IncomingSideFrom(CombatSystem combat, World world, int slot, int now)
     {
         object swing = s_mostAdvanced.Invoke(combat, [world, slot, now, -1, false])!;
-        if ((int)s_blowAttacker.GetValue(swing)! < 0) return 0;
-        return (int)s_blowSide.Invoke(combat, [world, slot, swing])!;
+        int attacker = (int)s_blowAttacker.GetValue(swing)!;
+        if (attacker < 0) return (0, -1);
+        return ((int)s_blowSide.Invoke(combat, [world, slot, swing])!, attacker);
     }
 
     #region Attack
@@ -720,6 +772,16 @@ public static class CombatPatches
             var mc = ManualCombatSystem.For(world);
             if (mc is null) return;
 
+            // The hand-fought character holds a readied swing (hold to ready): no blow is on its way, so an enemy may take its turn (Kenshi lets
+            // nobody swing at a fighter whose swing comes at it: a held swing would keep everyone off for good).
+            if (!__result && mc.HeldReady && mc.Controls(world, t) && !mc.Controls(world, i))
+            {
+                __result = true;
+                if (s.YieldTo == t) s.YieldUntil = now;
+                mc.WaitOver(i);
+                return;
+            }
+
             // An enemy asking to swing at the hand-fought character (manual combat only): Kenshi's turn-taking stays (the initiative roll, the
             // loser's half-second yield), but the yield is not stretched while the player holds a block (Kenshi starts it when the winner's block
             // ends, and the player's held block never ends), and an enemy that has kept losing the roll for the longest wait swings anyway (the
@@ -776,13 +838,17 @@ public static class CombatPatches
     }
 
     /// <summary>Combos: the swing the player asked for plays at its combo speed (riposte, chain).</summary>
-    static void PlayRatePostfix(World world, int slot, bool attack, ref float __result)
+    /// <remarks>The JIT may inline this small method into StartAttack, which skips the patch: ManualCombatSystem then rescales the new swing itself
+    /// (it knows from <see cref="ManualCombatSystem.RateApplied"/> whether this ran).</remarks>
+    static void PlayRatePostfix(CombatSystem __instance, World world, int slot, bool attack, ref float __result)
     {
         if (!attack || !t_asked) return;
         try
         {
             var mc = ManualCombatSystem.For(world);
-            if (mc is not null && mc.Controls(world, slot) && mc.NextSwingRate > 1) __result *= mc.NextSwingRate;
+            if (mc is null || !mc.Controls(world, slot) || mc.NextSwingRate <= 1) return;
+            __result *= mc.NextSwingRate;
+            mc.RateApplied(s_write(__instance)[slot].AttackSeq);
         }
         catch (Exception e)
         {
@@ -1055,6 +1121,35 @@ public static class CombatPatches
     /// holds (directional blocking) or for the blow's own side (easy blocking). A wrong guard is still raised, and the blow gets through. A
     /// fighter that cannot block (fists, a weapon that cannot) dodges instead. Stumble break-outs are left to the game.
     /// </summary>
+    /// <summary>
+    /// An enemy's defence against one of the hand-fought character's swings: its first decision stands. Kenshi rolls each decision afresh, so a
+    /// swing held at the ready (or the guard let off and raised again, ManualCombatSystem) gave an enemy that lost its block roll roll after roll
+    /// until one won: it blocked though its stats would not. A lost first roll now means no defence against that swing (a side switch is a new
+    /// swing, a new roll; so is letting the held swing go: the strike itself gets a fresh roll). A won one changes nothing (Kenshi's own rolls from
+    /// there, as in a plain fight).
+    /// </summary>
+    static void ChooseDefencePostfix(World world, int i, bool stumbling, object[] __args, ref int __result)
+    {
+        if (stumbling) return;
+        try
+        {
+            var mc = ManualCombatSystem.For(world);
+            if (mc is null || mc.Slot < 0 || i == mc.Slot) return;
+            object swing = __args[s_chooseDefenceSwing];
+            if ((int)s_blowAttacker.GetValue(swing)! != mc.Slot) return;
+            int seq = (int)s_blowSeq.GetValue(swing)!;
+            if (!mc.FirstDefence(i, mc.DefenceKey(seq), __result >= 0))
+            {
+                if (__result >= 0) mc.Detail($"{world.Characters.Cold(i)?.Name}: no block (its first roll against this swing was lost)");
+                __result = -1;
+            }
+        }
+        catch (Exception e)
+        {
+            ManualCombatMod.LogException("ChooseDefence postfix", e);
+        }
+    }
+
     static bool ChooseDefencePrefix(CombatSystem __instance, World world, int i, CharacterCold cold, bool stumbling, object[] __args,
         ref int __result)
     {
@@ -1085,6 +1180,13 @@ public static class CombatPatches
             int blow = (int)s_blowBlow.GetValue(swing)!;
             int lands = (int)s_blowLands.GetValue(swing)!;
             int side = BlowSide(__instance, world, i, attacker, blow);
+            // Blocking turns the character to the attacker: a blow from behind is met with the front guard (StartDefence follows this swing, so
+            // the game turns the character to it before it lands), and the attacker becomes the target (the next Schedule).
+            if (mc.TurnToBlocked)
+            {
+                side = mc.FrontSide(world, attacker, blow, side, lands, world.Tick);
+                mc.BlockingFrom(attacker);
+            }
             // A group fight (auto-block): the held guard turns to each swing's side by itself.
             int guard = mc.AutoBlockAt > 0 && mc.Attackers >= mc.AutoBlockAt ? side : mc.GuardFor(side);
 
@@ -1128,6 +1230,16 @@ public static class CombatPatches
             ManualCombatMod.LogException("ChooseDefence prefix", e);
             return true;
         }
+    }
+
+    /// <summary>The swing's own side for <paramref name="blow"/> (as it comes at a defender facing the attacker), or 0.</summary>
+    internal static int SwingSide(CombatSystem combat, int attacker, int blow)
+    {
+        var read = s_read(combat);
+        var techniques = s_techniques(combat);
+        if ((uint)attacker >= (uint)read.Length) return 0;
+        int tech = read[attacker].AttackTech;
+        return (uint)tech < (uint)techniques.Length ? techniques[tech].DirectionOf(blow) : 0;
     }
 
     /// <summary>The side a blow comes from as the defender stands now (CombatSystem.BlowSide).</summary>

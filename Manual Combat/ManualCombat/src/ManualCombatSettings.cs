@@ -227,10 +227,111 @@ public sealed class ManualCombatSettings
             + "width as the aim steadies (0.5: twice as close). 1: no zoom.")]
     public double CrossbowZoom { get; set; } = 0.5;
 
+    [Setting("Walking speed while aiming", Min = 0.1, Max = 1, Step = 0.05, SubGroup = "Crossbows", VisibleWhen = nameof(ManualCrossbow),
+        Hint = "In a fight, W A S D step this slowly with the crossbow aimed (and firing), as a share of the footwork speed. The upper body keeps "
+            + "the aim, the legs walk.")]
+    public double CrossbowWalkSpeed { get; set; } = 0.35;
+
+    [Setting("Reload while walking", SubGroup = "Crossbows", VisibleWhen = nameof(ManualCrossbow),
+        Hint = "On: the held reload goes on while you step (in a fight at the reload walking speed below). Off: stepping stops it (a third, once "
+            + "reached, is kept).")]
+    public bool ReloadWhileWalking { get; set; } = true;
+
+    [Setting("Walking speed while reloading", Min = 0.05, Max = 1, Step = 0.05, SubGroup = "Crossbows", VisibleWhen = nameof(ReloadWhileWalking),
+        Hint = "In a fight, W A S D step this slowly while the reload runs, as a share of the footwork speed.")]
+    public double ReloadWalkSpeed { get; set; } = 0.2;
+
+    [Setting("Hold to ready your swing",
+        Hint = "As in Mount & Blade: hold left click and your swing stops at the top of its wind-up and waits; let go to strike. A quick click "
+            + "swings at once. Right click while readied feints.")]
+    public bool HoldToReady { get; set; } = true;
+
+    [Setting("Ready point", Min = 0.3, Max = 0.95, Step = 0.05, VisibleWhen = nameof(HoldToReady),
+        Hint = "Where in the wind-up a held swing waits, as a share of the way to the blow (0.7: most of the wind-up done).")]
+    public double ReadyPoint { get; set; } = 0.7;
+
+    [Setting("Wind-up speed into a held swing", Min = 1, Max = 3, Step = 0.1, VisibleWhen = nameof(HoldToReady),
+        Hint = "A held swing reaches its ready pose this much faster (the strike after you let go plays at its normal speed). 1: no faster.")]
+    public double HeldWindup { get; set; } = 1.6;
+
+    [Setting("Enemy guard against a held swing (seconds)", Min = 0.05, Max = 3, Step = 0.05, VisibleWhen = nameof(HoldToReady),
+        Hint = "Enemies treat a held attack as coming only this long (switching sides does not start it again); then they may lower their guard "
+            + "to attack you. One that cannot attack guards again at once.")]
+    public double HeldGuardTime { get; set; } = 0.3;
+
+    [Setting("Switch sides while holding", VisibleWhen = nameof(HoldToReady),
+        Hint = "Flick the mouse while holding a swing and it changes to that side (the new swing winds up from part way).")]
+    public bool HeldSideSwitch { get; set; } = true;
+
+    [Setting("Walk while holding a swing", VisibleWhen = nameof(HoldToReady),
+        Hint = "W A S D step while you hold a swing ready: the upper body holds the swing, the legs walk. Let go and the full swing plays.")]
+    public bool WalkReadied { get; set; } = true;
+
+    [Setting("Walking speed while holding", Min = 0.2, Max = 1, Step = 0.05, VisibleWhen = nameof(WalkReadied),
+        Hint = "As a share of the footwork speed.")]
+    public double ReadiedWalkSpeed { get; set; } = 0.5;
+
+    [Setting("Cut the recovery",
+        Hint = "Once your swing's blow has landed or missed (and the lock after your blow is over), blocking, dodging, stepping or attacking "
+            + "cuts off the rest of the swing animation instead of waiting for it.")]
+    public bool CutRecovery { get; set; } = true;
+
+    [Setting("Blocking turns you to the attacker",
+        Hint = "Blocking a swing from the side or from behind turns your character to face that attacker, and makes it your target.")]
+    public bool TurnToBlocked { get; set; } = true;
+
+    [Setting("Animal wind-up speed", Min = 0.4, Max = 1, Step = 0.05, SubGroup = "Animals",
+        Hint = "Animals' attacks at you wind up this much slower, so you see them coming (the blow and after play at normal speed). 1: Kenshi's speed.")]
+    public double AnimalWindup { get; set; } = 0.75;
+
+    [Setting("Bigger warning for animal attacks", SubGroup = "Animals", VisibleWhen = nameof(Arrows),
+        Hint = "The red incoming arrow is larger and stronger (still see-through) while an animal's attack comes at you.")]
+    public bool AnimalWarning { get; set; } = true;
+
+    // Slow motion: optional, through PZA's SlowMo mod. These rows show only when that mod is in the load order; without it nothing happens.
+
+    /// <summary>For VisibleWhen: PZA's SlowMo is loaded.</summary>
+    public bool SlowMoFound => SlowMo.Installed;
+    public bool SlowMoMomentShown => SlowMo.Installed && (SlowMoParry || SlowMoPerfectDodge);
+    public bool SlowMoRiposteShown => SlowMo.Installed && SlowMoRiposte;
+
+    [Setting("Slow motion on a parry", SubGroup = "Slow motion (PZA's SlowMo)", VisibleWhen = nameof(SlowMoFound),
+        Hint = "A parry slows time for a short moment.")]
+    public bool SlowMoParry { get; set; } = true;
+
+    [Setting("Slow motion on a perfect dodge", SubGroup = "Slow motion (PZA's SlowMo)", VisibleWhen = nameof(SlowMoFound),
+        Hint = "A perfect dodge (right click with fists, or Mouse 4) slows time for a short moment.")]
+    public bool SlowMoPerfectDodge { get; set; } = true;
+
+    [Setting("Moment speed", Min = 0.1, Max = 0.9, Step = 0.05, SubGroup = "Slow motion (PZA's SlowMo)", VisibleWhen = nameof(SlowMoMomentShown),
+        Hint = "How fast time runs in the moment after a parry or perfect dodge (0.3: a third of normal speed).")]
+    public double SlowMoSpeed { get; set; } = 0.3;
+
+    [Setting("Moment length (real seconds)", Min = 0.1, Max = 2, Step = 0.05, SubGroup = "Slow motion (PZA's SlowMo)",
+        VisibleWhen = nameof(SlowMoMomentShown))]
+    public double SlowMoSeconds { get; set; } = 0.4;
+
+    [Setting("Slow motion on the riposte", SubGroup = "Slow motion (PZA's SlowMo)", VisibleWhen = nameof(SlowMoFound),
+        Hint = "Your riposte (the faster swing after a parry or perfect dodge) plays in slow motion until its blow lands.")]
+    public bool SlowMoRiposte { get; set; } = true;
+
+    [Setting("Riposte speed in slow motion", Min = 0.1, Max = 0.9, Step = 0.05, SubGroup = "Slow motion (PZA's SlowMo)",
+        VisibleWhen = nameof(SlowMoRiposteShown), Hint = "How fast time runs during the riposte swing.")]
+    public double SlowMoRiposteSpeed { get; set; } = 0.5;
+
+    [Setting("Riposte slow motion after the blow (seconds)", Min = 0, Max = 1.5, Step = 0.05, SubGroup = "Slow motion (PZA's SlowMo)",
+        VisibleWhen = nameof(SlowMoRiposteShown), Hint = "How long the slow motion lasts once the riposte's blow has landed.")]
+    public double SlowMoRiposteAfter { get; set; } = 0.2;
+
     [Setting("Auto-block from this many attackers", Min = 0, Max = 8, Step = 1,
         Hint = "With at least this many enemies on you, your held guard turns to each swing by itself (you still hold block). "
             + "0: never.")]
     public int AutoBlockAttackers { get; set; } = 3;
+
+    [Setting("Hide the mouse pointer in fights",
+        Hint = "In PZA's over-the-shoulder and first-person views the game's pointer sits on the crosshair; in a fight it is hidden. "
+            + "Hold Alt (or open a window) and it shows again.")]
+    public bool HidePointerInFights { get; set; } = true;
 
     [Setting("Outline your target", Hint = "Kenshi's hover outline, in red, on the enemy you are locked on to in a fight.")]
     public bool OutlineTarget { get; set; } = true;

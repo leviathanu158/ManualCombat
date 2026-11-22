@@ -44,6 +44,19 @@ public sealed record ManualAttack(CharacterId Character, int Direction, System.N
 {
     /// <summary>Pressed while the game was paused: no chamber or combo timing from it.</summary>
     public bool InPause { get; init; }
+
+    /// <summary>The button stays held (left click): a <see cref="ManualAttackRelease"/> follows when it is let go (hold to ready).</summary>
+    public bool Held { get; init; }
+}
+
+/// <summary>The aim changed while the attack button is held: the held swing switches to that side.</summary>
+public sealed record ManualAttackAim(CharacterId Character, int Direction) : SimCommand;
+
+/// <summary>The held attack button was let go: a readied swing strikes.</summary>
+public sealed record ManualAttackRelease(CharacterId Character) : SimCommand
+{
+    /// <summary>Let go while the game was paused: no chamber timing from it.</summary>
+    public bool InPause { get; init; }
 }
 
 /// <summary>The block button went down or up, or the held direction changed while blocking.</summary>

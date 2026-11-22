@@ -8,6 +8,7 @@
 // Commands (one per line):
 //   aim <overhead|left|right|thrust>   the attack direction, as a mouse flick would set it (held until changed)
 //   attack [direction]                 a left click (a swing; with the crossbow out, a shot along the crosshair)
+//   attack hold [direction] | release  left click held down (hold to ready) / let go
 //   block on [direction] | block off   right click held / let go
 //   dodge | target | swap | leave     Mouse 4, Mouse 5, X, U
 //   reload [on] | reload off           the crossbow reload held / let go (left click on an empty crossbow, Mouse 4 out of fights)
@@ -105,6 +106,39 @@ public static partial class InputWatch
             long tick = s_ctx.Tick;
             switch (verb)
             {
+                case "move":
+                {
+                    // W A S D as the footwork sends them: camera-relative (forward = away from the camera), "off" to stand.
+                    var forward = CameraForward();
+                    var side = new Vector2(-forward.Y, forward.X);
+                    string way = a.Length > 1 ? a[1].ToLowerInvariant() : "off";
+                    var want = way switch
+                    {
+                        "forward" or "w" => forward,
+                        "back" or "s" => -forward,
+                        "left" or "a" => -side,
+                        "right" or "d" => side,
+                        _ => Vector2.Zero,
+                    };
+                    Send(new ManualMove(who, want) { Tick = tick });
+                    return "ok, move " + way;
+                }
+                case "reaim":
+                {
+                    int dir = Direction(a.Length > 1 ? a[1] : "");
+                    s_testAim = dir;
+                    Send(new ManualAttackAim(who, dir) { Tick = tick });
+                    return "ok, held attack aimed " + Dir.Name(dir);
+                }
+                case "release":
+                    Send(new ManualAttackRelease(who) { Tick = tick });
+                    return "ok, attack let go";
+                case "attack" when a.Length > 1 && a[1].ToLowerInvariant() == "hold":
+                {
+                    int dir = a.Length > 2 ? Direction(a[2]) : AimNow;
+                    Send(new ManualAttack(who, dir, CameraForward()) { Tick = tick, Held = true });
+                    return "ok, attack held " + Dir.Name(dir);
+                }
                 case "attack":
                 {
                     int dir = a.Length > 1 ? Direction(a[1]) : AimNow;
@@ -149,7 +183,7 @@ public static partial class InputWatch
                     Send(new ManualLeave(who) { Tick = tick });
                     return "ok";
                 default:
-                    return $"unknown command '{verb}' (aim, attack, block, dodge, target, swap, reload, leave, report)";
+                    return $"unknown command '{verb}' (aim, attack [hold], release, block, dodge, target, swap, reload, leave, report)";
             }
         }
 

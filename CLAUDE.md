@@ -5,7 +5,7 @@ Full background is in `ManualCombat-handover.txt` (the original claude.ai handov
 ## Project
 - Mount & Blade style melee for **MeitouClient**, the open-source C#/.NET reimplementation of Kenshi (github.com/VlcekM/MeitouClient). It adds directional attacks aimed by mouse flick, hold-to-block, parries, feints, combos, clashing, chambering, hyper armor and manual crossbows.
 - Works together with PZA's "WASD & Controller Support" mod (github.com/PZA-Mods/PZAMeitouWASDController). Manual combat is active only while PZA's WASD is on.
-- License: GPLv3. Current version: **0.9.0**.
+- License: GPLv3. Current version: **0.9.26**.
 - Source: `Manual Combat\ManualCombat\` (src\*.cs, ManualCombat.csproj, meitou.json, build.bat/build.ps1, README.md).
 - Meitou reference source (read-only, outside this repo): `C:\KenshiRef\MeitouClient` (git checkout at the commit of the installed Meitou build).
 
@@ -31,7 +31,7 @@ Full background is in `ManualCombat-handover.txt` (the original claude.ai handov
 - All world changes go through SimCommands, and ALL mod state is hashed (IStateHashed), for determinism and future multiplayer.
 
 ## His PC
-- Meitou install: `C:\Kenshi_Meitou`. Current version: `versions\0.22.2-nightly.20261121\` (commit 802c1ca3fcec7250d0a22c7be3dd647013cdab2a, since 2026-11-21; before: 0.22.2-nightly.20261119.2, 69d2688). He runs the Vulkan renderer.
+- Meitou install: `C:\Kenshi_Meitou`. Current version: `versions\0.22.2-nightly.20261122.2\` (commit d0fa4495d1a0689aab9e640f5c96ae15729ff0a4, since 2026-11-22; before: 0.22.2-nightly.20261121, 802c1ca). The build's commit is stamped in MeitouClient.dll ("nightly.<date>+<sha>"); C:\KenshiRef\MeitouClient is checked out at it. He runs the Vulkan renderer.
 - .NET SDK 11.0.100 (10.0.100 also installed).
 - Game log: `C:\Kenshi_Meitou\versions\0.22.2-nightly.20261121\log.txt` (next to the game exe; follows the version). Mod lines start with `mod       manualcombat:`, and a session starts at the last `manualcombat: ready`.
 - Kenshi: `C:\Steam Games\steamapps\common\Kenshi`. The mod installs to `Kenshi\mods\ManualCombat`.
@@ -136,6 +136,42 @@ Kenshi facts:
 
 ## PZA collaboration
 PZA plans an API in his WASD mod and will patch Manual Combat to use it. It will replace the Driver.On reflection, FightHold, Resolve priority, Alt handling and the camera/crosshair reads. **When his patched version comes back, it becomes the base: read his API and build on it.** Controller support is his.
+
+## 0.9.20 (2026-11-22, his choices; all tested through the test channel)
+- **Hold to ready**: left click held (ManualAttack Held, ManualAttackRelease on MouseUp) stops the swing at Ready point (0.7 of the way to blow 1) by moving AttackStart/AttackEnd on each tick; release strikes (the chamber is timed from the release); block while readied always feints. Enemies block readied swings with Kenshi's roll and animation (verified: 6/6 "Blocked" against a maxed bandit).
+- **Cut the recovery**: after the last blow + RecoveryLock, block/dodge/step/attack ends the follow-through (AttackTech -1, CancelTick); ReadyTick = now + Kenshi's post-swing pause by outcome.
+- **Blocking turns you** (TurnToBlocked): a held guard meets a blow from behind with the front guard for the swing's own side (FrontSide, only if it lands a tick later or more), sets ReactedSlot so Meitou's DefenceAim/LookAt turn the character, and retargets to that attacker (Retarget "blocked"; from ChooseDefence via BlockingFrom).
+- **Animals**: wind-up slowed by Rescale in Schedule one tick after the swing starts (AttackStart == now-1, target the character, Fighter.IsAnimal or CharacterFacts.Animal: data-driven, so modded creatures count), back to full speed after the first blow, on a retarget, or on release. Bigger, still see-through red arrow (AnimalWarning).
+- **PlayRate is inlined by the JIT**: the PlayRate postfix never fired, so ripostes/combos were never faster before 0.9.20. Speed changes now go through ManualCombatSystem.Rescale (keeps the clip's progress); the postfix stays and marks RateApplied so nothing doubles. Don't rely on patching small Meitou methods.
+- **Slow motion (optional, PZA's SlowMo, SlowMo.cs)**: SlowMoApi found by name (Hold/Release on the host thread, from InputWatch's Resolve postfix). A short moment on parry and on perfect dodge (0.3x, 0.4 s real), the riposte swing at 0.5x until its blow + 0.2 s. All toggles/speeds/lengths are settings, shown only when SlowMo is loaded (SlowMo.Installed).
+
+## 0.9.21 (2026-11-22, his requests; tested through the test channel, screenshot checked)
+- **Faster held wind-up** (HeldWindup 1.6): a held swing is Rescaled at its start, undone on release (_fastWindupSeq).
+- **Switch sides while holding**: a flick while left click is held sends ManualAttackAim; the held swing is cut and a swing of the new side starts at once (no feint lockout), jumped half way to the ready point. A switched riposte stays a riposte.
+- **Walk while holding** (UpperBody.cs): upper-body copies of every whole-body humanoid technique (279 with his mods: animation mods' attacks included, nothing named) are appended to the world's AnimationLibrary list in place from an AnimationSystem constructor prefix (the library is built BEFORE code mods start, so a library-constructor patch is too late). AnimationMask.Find prefix gives "<name> [upper]" the original's mask plus the below-waist bones, no root motion. TechniqueOf postfix shows the copy while ManualCombatSystem.UpperSwing (held swing, NextBlow 1, W A S D pushing); Steer/Velocity patches let the footwork run during it at ReadiedWalkSpeed (0.5). Release = the whole-body swing from the same progress. Game tables sized by the library count read with bounds checks (audio, splashes); per-character Plays is sized on first animation.
+- Test channel: `attack hold [dir]`, `reaim <dir>`, `release`, `move <forward|back|left|right|off>`. Agent `camera focus c:0.0` + `camera set --zoom 40 --pitch 12` + `screenshot <path>` shows the pose.
+
+## 0.9.22 (2026-11-22, bug fixes from his play test)
+- **Attacking while walking with WASD lost the fight**: Meitou queues the player's attack order (the fight starts a few ticks later), and PZA's steering MoveOrder/StopCommand in that gap replaced it, so the attacked squad (which had already reacted) was left with nobody to fight. FightHold now also holds those single-character commands from the tick an AttackOrder naming the character is taken until its fight shows (at most 2 s). Reproduced and verified on the starving bandit mob near -45570,-2665 (it is in mctest too; teleport ONTO the group, a teleport elsewhere there can leave Su under the ground).
+- **Leaving (U) while chased**: the leave window now lasts while W A S D keep pushing (plus 1 s), so PZA's run orders keep going through; an attack or block ends it. Standing still with enemies on you, Kenshi fights back as usual.
+- Known, not fixed: wind-ups that drop into a low stance look off over walking legs (the upper body keeps the crouch, the legs stand).
+
+## 0.9.23 (2026-11-22)
+- **Pointer hidden in fights** (HidePointerInFights, default on): PZA's views pin Meitou's own pointer at the centre (their crosshair spot), so its action icon sat on the crosshair. A prefix on Meitou.Game.Ui.PointerView.DrawPointer/DrawPointerBeside skips it while in a fight, manual combat active and PZA's mouse look on (PZA.WASDControl.Meitou.Look.On, by reflection). Alt, windows and menus end PZA's mouse look, so the pointer shows then. Agent screenshots never include the pointer: check it by hand. Hardware mouse (Windows cursor) is not covered (he has it off).
+
+## 0.9.24 (2026-11-22, his requests; built, NOT yet tested in game: a test run was stopped)
+- **Chamber from a held swing**: letting go of a held attack always resets the chamber timing (_attackPressTick = release), so switching to the blow's side while held and letting go in the window chambers; a swing frozen at the ready point (not let go) never chambers.
+- **Readied swing vs enemy AI**: a readied swing counts as a coming blow only for HeldGuardTime (0.4 s, his design: a well-timed side switch catches them guarding the wrong side). After it, enemies guarding against it drop the guard (DefendReadyTick pushed so they do not re-block at once) and HasInitiative lets them swing (HeldReady). Before this a held swing kept every enemy blocking forever.
+- **Stagger during a held swing**: already worked (verified in a run: poise 1/2, 0/2, then "staggered"); Su has 2 poise (Toughness 100), refilled after 5 s without a hit.
+- **Crossbow walking**: upper-body copies now include the RANGED category records (aim, shot, the crossbows' reload records; 286 copies). In fights: aiming/firing walks at CrossbowWalkSpeed 0.35, reloading at ReloadWalkSpeed 0.1 (his numbers: reload ~10%, aim slower than a held attack). Reload while walking (setting) in and out of fights. Out of fights the reload clip now plays (TechniqueOfPostfix, OutOfFightReload progress; upper-body copy while walking) - check how it looks with the crossbow on the back.
+
+## 0.9.25 (2026-11-22, his design; tested through the test channel)
+- **Enemies vs a held attack** (his rules: small window, not abusable, AI still attacks through spam-switching): HeldGuardTime 0.3 s counted from when the hold started (a side switch does not restart it). After it, an enemy guarding against the held attack, or kept waiting by the end of such a guard (each switch makes Kenshi end the guard and start the after-block wait), is let off once per 0.3 s (_guardSince/_guardFreed per slot) to take its turn; HasInitiative allows it (HeldReady); an enemy already swinging keeps its swing (DefendReadyTick pushed: Kenshi would abort it, a held swing waits near its blow). One that cannot attack guards again at once: no free hit. Verified: spam-switching every 6 ticks, the maxed bandit still started 3 swings in 4 s.
+- **Switch + release in one moment** still switches (_releasedNow); chamber 2/2 by switching to the blow's side and letting go 6-8 ticks before it lands, 0/2 when kept holding.
+- **Crossbow**: walking while aiming 7.1 u/s, while reloading 1.4 u/s with the reload going on (4% -> 17%); out of fights the reload clip plays and the crossbow shows in hand (World.FillIdentity postfix setting the snapshot's WeaponDrawn/RangedDrawn; FillIdentity is a World member, not a WorldPublish class).
+- Reload walking speed raised to 0.2 in 0.9.26 (his choice): at 0.1 the leg clips (tied to the real speed) played so slowly it looked like standing.
+- Released held swings are left to Kenshi: in tests vs a maxed bandit, blocked when it guarded, hit when it was mid-swing itself (a trade), missed when out of reach.
+- **Enemy block rolls vs a held attack** (his rule: blocks follow their stats): an enemy's first defence decision per (swing, held/let go) stands (ChooseDefence postfix, FirstDefence/DefenceKey, per-slot _defenceSeq/_defenceOk); a lost roll is not re-rolled while the same swing is held. A side switch (new swing) or the release gets a fresh roll. Built and determinism-checked, not tested in game (test runs were stopped).
 
 ## Open / next
 - Tested 2026-11-20/21 through the test channel: blocks, parries, combos, clash and crush-through, chamber, hyper armor, dodge, crossbow (swap, reload, shot, steadying). He liked scenario tests and fuzzing via the test channel.

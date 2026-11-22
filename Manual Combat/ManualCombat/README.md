@@ -1,4 +1,4 @@
-# Manual Combat for Meitou (v0.9.19)
+# Manual Combat for Meitou (v0.9.26)
 
 Fight with your own hands, Mount & Blade style. Built for Meitou **0.22.2-nightly.20261121**. **Needs PZA's WASD & Controller Support**: manual combat is only on while its WASD movement is on (with WASD off, or without PZA's mod, your characters fight the normal Kenshi way).
 
@@ -16,7 +16,7 @@ Manual combat follows your **first selected character** (the one PZA's mod steer
 | Input | What it does in a fight |
 |---|---|
 | **Flick the mouse** | Picks the side of your swing or guard: **left / right**, **up = overhead**, **down = thrust**. The last flick sticks until the next. |
-| **Left click** | **Attack** toward the aimed side. |
+| **Left click** | **Attack** toward the aimed side. A quick click swings at once; **hold** it and the swing stops at the top of its wind-up and waits (**hold to ready**), let go to strike. Holding, the wind-up goes faster; flick the mouse to switch the held swing to another side; W A S D walk slowly with the swing held (upper body holds it, legs walk). Right click while readied feints. |
 | **Right click** (hold) | **Block.** The guard goes up at once and stays up as long as you hold it, swing or no swing. Pressing it just before a hit lands is a **parry**, which staggers the attacker (how early you may press depends on your Defence; see *Counters and skill*). |
 | **Mouse button 4** | **Dodge**, any time in a fight, swing coming or not. Out of a fight: **hold to reload** your crossbow. |
 | **Mouse button 5** | **Switch target** to the enemy nearest where the camera points. |
@@ -41,6 +41,9 @@ Start fights as usual: right-click an enemy (or use PZA's attack button), or get
 - **Blocking is directional.** Your guard faces the side you aim, and only a guard on the swing's side stops it.
 - **A good block can still be beaten**, as in Kenshi: when the attacker's skill is well above your defence, a blow may get past a guard on the right side. It happens half as often as in Kenshi (setting *Block beaten chance*). A **parry always blocks**.
 - **Group fights:** with 3 or more enemies on you, your held guard turns to each swing's side by itself (setting *Auto-block from this many attackers*). You still hold right click to block.
+- **Blocking turns you to the attacker.** Block a swing from the side or from behind and your character turns to face that attacker, who becomes your target (setting *Blocking turns you to the attacker*).
+- **Cut the recovery.** Once your blow has landed or missed (and the 0.2 s lock after it), blocking, dodging, stepping or attacking cuts off the rest of the swing animation instead of waiting for it. Kenshi's pause before your next attack still counts, from the cut (setting *Cut the recovery*).
+- **Enemies block your swings** with Kenshi's own block roll and animation, readied swings included.
 - **Your target** gets Kenshi's hover outline, in red.
 - A guard raised late still counts if it's up when the blow lands.
 
@@ -76,6 +79,16 @@ The **dodge key (Mouse 4)** gives a perfect dodge too, for everyone: pressed wit
 ## Animals
 
 Manual combat is never used for an animal in your squad (they fight with their own attacks and never block or dodge): selected, it fights the plain Kenshi way, and "Manual combat: not for animals" shows.
+
+Fighting animals: an animal's attack at you winds up slower (0.75 of its speed by default, setting *Animal wind-up speed*), so you can see it coming; the blow and what follows play at normal speed. Its red incoming arrow is bigger and stronger (still see-through). This goes by the game's own animal flag, so creatures added by mods count too.
+
+## Slow motion (optional: PZA's SlowMo)
+
+With PZA's SlowMo mod in your load order (not needed otherwise; its settings rows show only when it's there):
+- a **parry** or **perfect dodge** slows time for a short moment (0.3x for 0.4 s by default);
+- your **riposte** plays in slow motion (0.5x) until its blow lands, and 0.2 s after.
+
+Each can be switched off, and the speeds and lengths are settings.
 
 ## Fair enemy pacing (manual combat only)
 
@@ -119,10 +132,13 @@ While fighting, faint arrows show at the centre of the screen (PZA's crosshair i
 - **W A S D footwork in fights**, **Fight-mode hint** (a small line at the top right while you fight), **Footwork speed**, **Close in by itself**.
 - **Show the guard at once**, **Mirror left and right guards**.
 - **Block and dodge cancel your swing (feint)**, with **Feint window**, **Locked after your blow** and **Attack lockout after a feint**.
-- **Auto-block from this many attackers** (0 = never), **Outline your target**, **Arrow opacity**, **Hint height**.
+- **Auto-block from this many attackers** (0 = never), **Outline your target**, **Hide the mouse pointer in fights** (in PZA's views; Alt or a window shows it), **Arrow opacity**, **Hint height**.
 - **Combos and counters**: **Combos**, **Riposte speed**, **Combo speed per step**, **Combo timing starts**, **Combo timing length**, **Rest after a combo**, **Clash and chamber sounds**, **Clashing** and **Clash window**, **Chambering**.
 - **Crossbows**: **Manual crossbow**, **Spread** (1.25 by default: a little wider than Kenshi's), **Steadied spread**, **Time to steady**, **Zoom when steadied**.
 - **Parry**, **Block beaten chance**, **Attack buffer**, **Skip the initiative roll**.
+- **Hold to ready your swing**, **Ready point**, **Wind-up speed into a held swing**, **Switch sides while holding**, **Walk while holding a swing** and its **walking speed**, **Cut the recovery**, **Blocking turns you to the attacker**.
+- **Animals**: **Animal wind-up speed**, **Bigger warning for animal attacks**.
+- **Slow motion (PZA's SlowMo)**: on a parry, on a perfect dodge, **Moment speed** and **length**; on the riposte, its speed and how long after the blow.
 - **Debug**: **Log details** writes every attack, block, parry, block roll and hit taken to `log.txt`, for testing and bug reports. Leave it off to play: off, the mod doesn't even put those lines together.
 - **On-screen messages**: short lines like *Parry!* show under the crosshair for a moment in a fight, the newest replacing the last.
 

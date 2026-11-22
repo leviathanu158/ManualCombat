@@ -40,6 +40,54 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     /// <summary>How long a press may keep stepping in for its aimed swing.</summary>
     const float StepInSeconds = 1.5f;
 
+    // ---- Hold to ready: the attack button held down; the swing it started (its AttackSeq) waits at the ready point until it is let go. ----
+    public bool AttackHeld { get; private set; }
+    int _heldSwingSeq = -1;
+    /// <summary>The held swing is waiting at its ready point now (as of this tick's Schedule).</summary>
+    bool _readied;
+    bool _holdToReady;
+    float _readyPoint;
+    /// <summary>The held swing's wind-up speed-up, the swing it was given to (undone on release), and a side switch asked for / just made.</summary>
+    float _heldWindup = 1;
+    int _fastWindupSeq = -1;
+    bool _heldSideSwitch, _reaimed, _switched;
+    /// <summary>The held attack was let go in this tick's inputs (a side switch in the same moment still counts).</summary>
+    bool _releasedNow;
+    /// <summary>Walking while holding a swing: on (setting), its speed share, and whether it applies this tick (the upper-body swing plays).</summary>
+    bool _walkReadied;
+    float _readiedWalkSpeed = 0.5f;
+    public bool UpperSwing { get; private set; }
+    /// <summary>The held swing waits at its ready point now (enemies may swing into it: HasInitiative).</summary>
+    public bool HeldReady => _heldActive && _readySince >= 0 && CurrentTick - _readySince >= _guardBreakTicks;
+    /// <summary>A held swing (winding up or readied) is under way at the last Schedule.</summary>
+    bool _heldActive;
+    /// <summary>The tick the swing came to the ready point (-1: not readied), and how long enemies guard against it before taking their turn.</summary>
+    int _readySince = -1, _guardBreakTicks = 30;
+    public float ReadiedWalkSpeed => _readiedWalkSpeed;
+    /// <summary>The footwork speed share with the crossbow out (aiming or reloading).</summary>
+    public float CrossbowWalkSpeed => _crossbowWalkSpeed;
+    float _crossbowWalkSpeed = 0.35f;
+    /// <summary>The footwork speed share while the reload runs in a fight.</summary>
+    public float ReloadWalkSpeed => _reloadWalkSpeed;
+    float _reloadWalkSpeed = 0.2f;
+
+    // ---- Cut the recovery. ----
+    bool _cutRecovery;
+
+    // ---- Blocking turns the character to the attacker (and makes it the target). ----
+    public bool TurnToBlocked { get; private set; }
+    /// <summary>The attacker the game's defence update last met with a held guard (-1: none since the last Schedule).</summary>
+    int _blockedFrom = -1;
+
+    // ---- Animals: per enemy slot, the AttackSeq of its swing at the character that started with a slowed wind-up (-1: none). ----
+    int[] _animalSlowSeq = [];
+    /// <summary>Per enemy slot: since when it has guarded against the held attack (-1: not guarding against it).</summary>
+    int[] _guardSince = [];
+    /// <summary>Per enemy slot: when it was last let off its guard against the held attack; whether any of these is set.</summary>
+    int[] _guardFreed = [];
+    bool _guardHeldSeen;
+    public float AnimalWindup { get; private set; } = 1;
+
     // ---- Block. ----
     public bool BlockHeld { get; private set; }
     public int BlockDir { get; private set; }
@@ -144,7 +192,8 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     /// <summary>The share of a reload that is kept once reached when the reload stops early (the rest of an unfinished reload is lost).</summary>
     const float ReloadCheckpoint = 1f / 3;
     /// <summary>The reload counts on now: held, and the character is not stepping (W A S D).</summary>
-    public bool ReloadGoes => ReloadHeld && MoveIntent == Vector2.Zero;
+    public bool ReloadGoes => ReloadHeld && (MoveIntent == Vector2.Zero || _reloadWhileWalking);   // walking: in fights at the reload walking speed
+    bool _reloadWhileWalking = true, _fightNow;
     int _lastLoaded;
     bool _emptyTold, _rangeTold;
     /// <summary>The crosshair ray of the last fire press (the shot goes along it), and whether there is one.</summary>
@@ -224,9 +273,122 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         int old = _waitSince.Length, size = Math.Max(count, old * 2);
         Array.Resize(ref _waitSince, size);
         Array.Resize(ref _waitLast, size);
+        Array.Resize(ref _animalSlowSeq, size);
         Array.Fill(_waitSince, -1, old, size - old);
         Array.Fill(_waitLast, -1, old, size - old);
+        Array.Fill(_animalSlowSeq, -1, old, size - old);
+        Array.Resize(ref _guardSince, size);
+        Array.Fill(_guardSince, int.MinValue / 2, old, size - old);
+        Array.Resize(ref _guardFreed, size);
+        Array.Fill(_guardFreed, int.MinValue / 2, old, size - old);
+        Array.Resize(ref _defenceSeq, size);
+        Array.Fill(_defenceSeq, -1, old, size - old);
+        Array.Resize(ref _defenceOk, size);
     }
+
+    /// <summary>
+    /// A swing in progress plays on at <paramref name="speed"/> times its current speed from <paramref name="now"/>: its clip length scales, and
+    /// its start and end move so that its progress now is kept (the animation does not jump). Done in Schedule, before the combat step.
+    /// </summary>
+    static void Rescale(ref CombatSlot a, int now, float speed)
+    {
+        if (a.AttackTicks <= 0 || speed <= 0) return;
+        int old = a.AttackTicks;
+        int ticks = Math.Max(2, (int)MathF.Round(old / speed));
+        float at = (now - a.AttackStart) / (float)old, end = (a.AttackEnd - a.AttackStart) / (float)old;
+        a.AttackTicks = ticks;
+        a.AttackStart = now - (int)MathF.Round(at * ticks);
+        a.AttackEnd = Math.Max(now + 1, a.AttackStart + (int)MathF.Ceiling(end * ticks));
+    }
+
+    /// <summary>The PlayRate patch gave the player's swing <paramref name="seq"/> its combo speed (when the JIT has not inlined PlayRate).</summary>
+    public void RateApplied(int seq) => _rateAppliedSeq = seq;
+    int _rateAppliedSeq = -1;
+    /// <summary>The riposte swing in progress (its AttackSeq; -1 none), for its slow motion.</summary>
+    int _riposteSwingSeq = -1;
+
+    /// <summary>
+    /// The animals' swings at the character: one that started in the last combat step plays its wind-up at the Animal wind-up speed; once its
+    /// first blow has struck (or the swing is over), the rest plays at the normal speed again. Both changes keep the clip's progress (Rescale).
+    /// </summary>
+    void AnimalSwings(World world, CombatSlot[] slots, int now)
+    {
+        var prev = world.Characters.Previous;
+        for (int c = 0; c < _animalSlowSeq.Length && c < slots.Length && c < prev.Length; c++)
+        {
+            ref var a = ref slots[c];
+            int seq = _animalSlowSeq[c];
+            if (seq < 0)
+            {
+                // A new swing at the character (started in the last step), an animal's, still in its wind-up: slowed.
+                if (AnimalWindup >= 1 || c == Slot || a.AttackTech < 0 || a.NextBlow != 1 || a.AttackStart != now - 1 || a.AttackTicks <= 0
+                    || a.TargetSlot != Slot || a.TargetGeneration != Generation || !prev[c].Alive) continue;
+                if (world.Characters.Cold(c) is not { } ac || !(ac.Fighter is { IsAnimal: true } || Meitou.Simulation.Bodies.CharacterFacts.Animal(ac)))
+                    continue;
+                int before = a.AttackTicks;
+                Rescale(ref a, now, AnimalWindup);
+                _animalSlowSeq[c] = a.AttackSeq;
+                Detail($"animal swing (slot {c}): wind-up slowed, clip {before} -> {a.AttackTicks} ticks");
+                continue;
+            }
+            if (a.AttackSeq != seq || a.AttackTech < 0 || a.AttackTicks <= 0)
+            {
+                _animalSlowSeq[c] = -1;
+                continue;
+            }
+            // Still winding up at the character: stays slow. Its first blow struck, or it turned on someone else: full speed from here.
+            if (a.NextBlow == 1 && a.TargetSlot == Slot && a.TargetGeneration == Generation) continue;
+            _animalSlowSeq[c] = -1;
+            int slow = a.AttackTicks;
+            Rescale(ref a, now, 1 / AnimalWindup);
+            Detail($"animal swing (slot {c}): {(a.NextBlow == 1 ? "turned on someone else" : "first blow struck")}, back to full speed (clip {slow} -> {a.AttackTicks} ticks)");
+        }
+    }
+
+    /// <summary>Every animal swing still slowed goes back to full speed at once (manual combat let go of the character).</summary>
+    void RestoreAnimalSwings(int now)
+    {
+        var slots = CombatPatches.WriteSlots(Combat);
+        for (int c = 0; c < _animalSlowSeq.Length; c++)
+        {
+            int seq = _animalSlowSeq[c];
+            if (seq < 0) continue;
+            _animalSlowSeq[c] = -1;
+            if (c >= slots.Length) continue;
+            ref var a = ref slots[c];
+            if (a.AttackSeq == seq && a.AttackTech >= 0 && a.AttackTicks > 0 && AnimalWindup > 0) Rescale(ref a, now, 1 / AnimalWindup);
+        }
+    }
+
+    /// <summary>Per enemy slot: the character's swing (AttackSeq) its first defence decision was against, and whether that decision defended.</summary>
+    int[] _defenceSeq = [];
+    bool[] _defenceOk = [];
+
+    /// <summary>
+    /// Enemy <paramref name="i"/> decided its defence against the character's swing <paramref name="seq"/> (<paramref name="defends"/>: a defence
+    /// was picked). The first decision per swing is kept; returns whether this one may stand (false: the first was lost, so none now). From the
+    /// combat step, which runs fighters in parallel: only enemy <paramref name="i"/>'s entries are written (sized in the serial Schedule).
+    /// </summary>
+    /// <summary>
+    /// The key an enemy's first defence decision is kept under: the swing, and whether it is still held (0) or let go (1). A side switch is a new
+    /// swing and letting it go a new phase, so each gets a fresh roll; only re-rolls while the same swing is held are refused.
+    /// </summary>
+    public int DefenceKey(int seq) => seq * 2 + (AttackHeld && seq == _heldSwingSeq ? 0 : 1);
+
+    public bool FirstDefence(int i, int seq, bool defends)
+    {
+        if ((uint)i >= (uint)_defenceSeq.Length) return true;
+        if (_defenceSeq[i] != seq)
+        {
+            _defenceSeq[i] = seq;
+            _defenceOk[i] = defends;
+            return true;
+        }
+        return _defenceOk[i] || !defends;
+    }
+
+    /// <summary>The game's defence update raised the held guard against <paramref name="attacker"/>'s swing (the character's own combat step).</summary>
+    public void BlockingFrom(int attacker) => _blockedFrom = attacker;
     public bool ChamberOn { get; private set; }
     public bool ManualCrossbow { get; private set; }
     /// <summary>The chance a held block is beaten, as a share of Kenshi's own (Block beaten chance setting).</summary>
@@ -355,7 +517,30 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
                     _attackPressTick = world.Tick;
                     _attackPaused = a.InPause;
                     _attackNew = true;
-                    Detail($"attack pressed, direction {Dir.Name(a.Direction)}");
+                    AttackHeld = a.Held && _holdToReady;
+                    Detail($"attack pressed, direction {Dir.Name(a.Direction)}{(AttackHeld ? " (held)" : "")}");
+                    break;
+                case ManualAttackAim m when Is(m.Character):
+                    if (!AttackHeld || m.Direction == Dir.None || m.Direction == AttackDir) break;
+                    AttackDir = m.Direction;
+                    _reaimed = true;
+                    Detail($"held attack aimed {Dir.Name(m.Direction)}");
+                    break;
+                case ManualAttackRelease r when Is(r.Character):
+                    if (!AttackHeld) break;
+                    AttackHeld = false;
+                    _releasedNow = true;
+                    // Letting go is when the held attack is unleashed: a chamber is timed from it (readied, still winding up, or switched to the
+                    // blow's side while held), never from the press long before. Switching sides alone chambers nothing: the release must come
+                    // within the chamber window before the blow lands.
+                    _attackPressTick = world.Tick;
+                    _attackPaused = r.InPause;
+                    if (_readied) Detail("attack let go: the readied swing strikes");
+                    else
+                    {
+                        Detail("attack let go (the swing was not readied yet)");
+                        if (AttackSeq >= 0) AttackUntil = Math.Max(AttackUntil, world.Tick + _bufferTicks);   // not started yet: a press as any
+                    }
                     break;
                 case ManualBlock b when Is(b.Character):
                     if (b.Held && !BlockHeld)
@@ -407,6 +592,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         bool leaving = tick < _leaveUntil;
         if (Slot < 0)
         {
+            RestoreAnimalSwings((int)tick);   // released mid-swing: no animal keeps a slowed wind-up
             FightHold.Publish(world.Commands, -1, 0, false, false);
             Hud.Publish(false, 0, CharacterId.None, false, 0);
             return;
@@ -437,13 +623,27 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             Detail("leaving the fight");
             ManualCombatMod.Notify("Leaving the fight - run!");
         }
+        else if (leaving)
+        {
+            // Still leaving while the player runs (W A S D): an enemy chasing and hitting would otherwise pull the character back into a fight as
+            // soon as the leave ran out (Kenshi fights back when attacked), and the hold would then stop the run. It ends a second after the keys
+            // stop, or at once with an attack or a block.
+            if (_attackNew || _blockDown)
+            {
+                _leaveUntil = long.MinValue;
+                leaving = false;
+                Detail("leaving given up (attack or block)");
+            }
+            else if (MoveIntent != Vector2.Zero) _leaveUntil = Math.Max(_leaveUntil, tick + (long)MathF.Ceiling(1f / Dt(world)));
+        }
 
         bool fighting = s.TargetSlot >= 0;
-        FightHold.Publish(world.Commands, Slot, Generation, fighting && !leaving, leaving);
+        _fightNow = fighting && !leaving;
+        FightHold.Publish(world.Commands, Slot, Generation, fighting && !leaving, leaving, tick, Dt(world));
         Hud.Publish(fighting && !leaving, IncomingSide(world, now, fighting),
             fighting ? new CharacterId(s.TargetSlot, s.TargetGeneration) : CharacterId.None, s.Ranged, ShotSpread,
             s.Loaded, world.Characters.Cold(Slot)?.Fighter?.Crossbow?.NumShots ?? 0, _steadyLevel,
-            s.Loaded > 0 ? 1 : s.ReloadTime > 0 && s.ReloadLeft > 0 ? 1 - s.ReloadLeft / s.ReloadTime : 0, _reloadRunning);
+            s.Loaded > 0 ? 1 : s.ReloadTime > 0 && s.ReloadLeft > 0 ? 1 - s.ReloadLeft / s.ReloadTime : 0, _reloadRunning, _incomingAnimal);
 
         // The target button: the enemy nearest the camera's aim.
         if (_targetLook is { } look)
@@ -460,6 +660,19 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         {
             _counterTold = true;
             ManualCombatMod.Notify("Perfect dodge!");
+            SlowMo.Moment(SlowMo.Kind.PerfectDodge);
+        }
+
+        // The animals' swings at the character: full speed again after their first blow (Animal wind-up speed).
+        AnimalSwings(world, slots, now);
+
+        // Blocking turns the character to the attacker: one met by a held guard (the game's defence update) becomes the target.
+        if (_blockedFrom >= 0)
+        {
+            int from = _blockedFrom;
+            _blockedFrom = -1;
+            if (TurnToBlocked && fighting && from != s.TargetSlot && from < prev.Length && prev[from].Alive && BlockHeld)
+                Retarget(world, ref s, from, "blocked");
         }
 
         if (_attackNew)
@@ -499,14 +712,41 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         }
         else if (AttackSeq >= 0 && s.AttackSeq != AttackSeq)
         {
-            // Used: a swing started. The combo it made is now the chain.
+            // Used: a swing started. The combo it made is now the chain. Held down, it waits at the ready point (hold to ready).
             AttackSeq = -1;
+            _heldSwingSeq = AttackHeld ? s.AttackSeq : -1;
+            // Its combo or riposte speed, when the PlayRate patch could not give it (the JIT inlined PlayRate): set now, the clip kept where it is.
+            if (NextSwingRate > 1 && _rateAppliedSeq != s.AttackSeq && s.AttackTech >= 0)
+            {
+                Rescale(ref s, now, NextSwingRate);
+                Detail($"swing sped up x{NextSwingRate:0.00} (clip now {s.AttackTicks} ticks)");
+            }
             if (_pendingLevel > 0) ManualCombatMod.Notify($"Combo x{_pendingLevel + 1}");
             if (NextSwingRate > 1 && tick <= _riposteUntil)
             {
+                _riposteSwingSeq = s.AttackSeq;
+                SlowMo.Riposte(true);
                 ManualCombatMod.Notify("Riposte");
                 Detail($"riposte: the swing plays x{NextSwingRate:0.00}");
             }
+            // A side switched while held (or as it was let go): the new swing starts part way into its wind-up (half way to the ready point), so the
+            // change reads as a turn of the weapon rather than a new swing from nothing.
+            if (_switched && s.AttackTech >= 0 && s.NextBlow == 1 && s.AttackTicks > 0 && CombatPatches.Technique(Combat, s.AttackTech) is { } turned)
+            {
+                int jump = (int)MathF.Floor(0.5f * _readyPoint * turned.StrikeProgress(1) * s.AttackTicks);
+                s.AttackStart -= jump;
+                s.AttackEnd -= jump;
+            }
+            if (AttackHeld && s.AttackTech >= 0 && s.NextBlow == 1 && s.AttackTicks > 0)
+            {
+                // Held: the wind-up into the ready pose plays faster (undone when let go).
+                if (_heldWindup > 1)
+                {
+                    Rescale(ref s, now, _heldWindup);
+                    _fastWindupSeq = s.AttackSeq;
+                }
+            }
+            _switched = false;
             _chain = _pendingLevel;
             _pendingLevel = 0;
             _lastSwingTag = AttackTag(AttackDir);
@@ -526,6 +766,117 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             Detail($"attack press ran out without a swing: {WhyNoSwing(in s, now)}");
             AttackSeq = -1;
         }
+
+        // The riposte swing (slow motion through PZA's SlowMo): over once its first blow has landed or it ended.
+        if (_riposteSwingSeq >= 0 && (s.AttackSeq != _riposteSwingSeq || s.AttackTech < 0 || s.NextBlow != 1))
+        {
+            _riposteSwingSeq = -1;
+            SlowMo.Riposte(false);
+        }
+
+        // The held wind-up's speed-up ends when the button is let go (or the swing is over): the strike plays at its own speed.
+        if (_fastWindupSeq >= 0 && (!AttackHeld || s.AttackSeq != _fastWindupSeq || s.AttackTech < 0 || s.NextBlow != 1))
+        {
+            if (s.AttackSeq == _fastWindupSeq && s.AttackTech >= 0 && s.AttackTicks > 0) Rescale(ref s, now, 1 / _heldWindup);
+            _fastWindupSeq = -1;
+        }
+
+        // A side switch while held: the held swing is given up and a swing of the new side starts at once (no feint lockout), part way in.
+        if (_reaimed)
+        {
+            _reaimed = false;
+            // (Let go in the same moment as the switch: the switch still counts, and the new side strikes.)
+            if (_heldSideSwitch && (AttackHeld || _releasedNow) && s.AttackTech >= 0 && s.AttackSeq == _heldSwingSeq && s.NextBlow == 1)
+            {
+                bool wasRiposte = _riposteSwingSeq == s.AttackSeq;
+                s.AttackTech = -1;
+                s.NextBlow = 0;
+                s.CancelTick = now;
+                s.ReadyTick = Math.Min(s.ReadyTick, now);
+                s.PauseUntil = Math.Min(s.PauseUntil, now);
+                _heldSwingSeq = _fastWindupSeq = -1;
+                AttackSeq = s.AttackSeq;
+                AttackUntil = tick + _bufferTicks;
+                _attackReported = false;
+                _switched = true;
+                if (wasRiposte) _riposteUntil = tick + _bufferTicks;   // the switched riposte is still a riposte
+                Detail($"held swing switched to {Dir.Name(AttackDir)}");
+            }
+        }
+
+        // Hold to ready: while the button is held, a press waits for its swing (no buffer running out), and the swing it started stops at the
+        // ready point of its wind-up (its clip held there: the start and end move on with the clock) until the button is let go.
+        if (AttackHeld && AttackSeq >= 0) AttackUntil = Math.Max(AttackUntil, tick + 1);
+        _readied = false;
+        if (AttackHeld && s.AttackTech >= 0 && s.AttackSeq == _heldSwingSeq && s.NextBlow == 1 && s.AttackTicks > 0
+            && CombatPatches.Technique(Combat, s.AttackTech) is { } readying)
+        {
+            int strikes = s.AttackStart + (int)MathF.Ceiling(readying.StrikeProgress(1) * s.AttackTicks);
+            int readyAt = s.AttackStart + (int)MathF.Floor(_readyPoint * (strikes - s.AttackStart));
+            if (now >= readyAt && readyAt < strikes)
+            {
+                s.AttackStart++;
+                s.AttackEnd++;
+                _readied = true;
+            }
+        }
+        // How long the attack has been held (since its held swing started; a side switch does not start it again, so switching back and forth cannot
+        // keep the enemies off).
+        _heldActive = AttackHeld && s.AttackTech >= 0 && s.AttackSeq == _heldSwingSeq && s.NextBlow == 1;
+        if (!AttackHeld) _readySince = -1;
+        else if (_heldActive && _readySince < 0) _readySince = now;
+
+        // A held swing counts as a blow on its way only for a moment (Enemy guard against a held swing): after that an enemy guarding against it
+        // lowers that guard to take its turn (HasInitiative lets it), as in Mount & Blade, where the AI blocks a held attack but still attacks you.
+        // An enemy that cannot attack then (out of reach, no turn) guards again at once, so a held swing never opens a free hit. A side switch
+        // starts a new wind-up the enemy must read again (Kenshi's own reaction and block roll), which is where timing pays.
+        // Switching sides makes Kenshi end the enemy's guard (a tick with no swing) and start its wait after a block, then a new guard: so the
+        // enemy's guarding is followed here (its last tick guarding against the held attack), and it is let off at most once per guard time.
+        if (!AttackHeld)
+        {
+            if (_guardHeldSeen)
+            {
+                Array.Fill(_guardSince, int.MinValue / 2);
+                Array.Fill(_guardFreed, int.MinValue / 2);
+                _guardHeldSeen = false;
+            }
+        }
+        else if (_heldActive)
+        {
+            _guardHeldSeen = true;
+            bool over = now - _readySince >= _guardBreakTicks;
+            var bodies = world.Characters.Previous;
+            for (int c = 0; c < slots.Length && c < bodies.Length; c++)
+            {
+                if (c == Slot || !bodies[c].Alive) continue;
+                ref var e = ref slots[c];
+                if (e.TargetSlot != Slot || e.TargetGeneration != Generation) continue;
+                // An enemy swinging at the character keeps its swing: Kenshi gives a swing up to defend once a blow at it is past half, and a held
+                // swing waits near its blow, so every swing an enemy started was given up at once (it is no blow on its way any more).
+                if (e.AttackTech >= 0 && e.NextBlow > 0)
+                {
+                    if (over) e.DefendReadyTick = Math.Max(e.DefendReadyTick, now + 2);
+                    continue;
+                }
+                bool guarding = e.ReactTech >= 0 && e.ReactedSlot == Slot && CombatPatches.IsBlock(Combat, e.ReactTech);
+                if (guarding) _guardSince[c] = now;   // its last tick guarding against the held attack
+                if (!over || now - _guardFreed[c] < _guardBreakTicks) continue;
+                // Guarding against it, or kept waiting by the end of such a guard (a switch): let off to take its turn. Its own pause after a swing
+                // is left alone (only a guard's wait is cut), so it attacks no faster than in Kenshi.
+                bool waiting = now - _guardSince[c] <= 3 && e.AttackTech < 0 && (now < e.ReadyTick || now < e.PauseUntil);
+                if (!guarding && !waiting) continue;
+                if (guarding) e.ReactTech = -1;
+                e.ReadyTick = Math.Min(e.ReadyTick, now);
+                e.PauseUntil = Math.Min(e.PauseUntil, now);
+                _guardFreed[c] = now;
+                Detail($"{world.Characters.Cold(c)?.Name} lowers its guard against the held swing to take its turn");
+            }
+        }
+
+        // Walking while holding a swing: the held swing (winding up or readied) plays on the upper body only and W A S D step at the readied
+        // walking speed (CombatPatches: the swing's upper-body copy, the footwork during a swing). Standing still, the whole-body swing plays.
+        UpperSwing = _walkReadied && Footwork && AttackHeld && !s.Ranged && s.AttackTech >= 0 && s.AttackSeq == _heldSwingSeq && s.NextBlow == 1
+            && MoveIntent != Vector2.Zero && UpperBody.Ready;
 
         // Combos: the speed of the swing waiting to start (riposte after a parry; a chain of swings from alternating sides).
         // After a combo (the last swing was a combo's cut-in), the next ordinary swing waits the combo rest after it ends: a combo is a burst,
@@ -562,11 +913,38 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         {
             _swinging = false;
             _swingEndedTick = tick;
+            Detail($"own swing over: last blow {s.LastOutcome}");
         }
 
         // Block or dodge pressed: the guard comes first, within limits. The pause after a swing (in which Kenshi neither attacks nor defends)
         // ends once the lock after the blow is over; the character's own swing is given up (a feint) only early in its wind-up, and a feint
         // keeps the next attack back a moment. Late in the swing it is committed: the guard waits for the swing to end.
+        // Cut the recovery: once the swing's last blow has struck and the lock after the blow is over, blocking, dodging, stepping or a new attack
+        // ends the swing's follow-through at once. Kenshi's pause after a swing still keeps the next attack back (counted from the cut); blocking,
+        // dodging and stepping are free.
+        if (_cutRecovery && s.AttackTech >= 0 && s.NextBlow == 0 && s.AttackTicks > 0 && now < s.AttackEnd
+            && CombatPatches.Technique(Combat, s.AttackTech) is { } done
+            && (BlockHeld || _dodgeNew || MoveIntent != Vector2.Zero || AttackSeq >= 0 && AttackSeq == s.AttackSeq))
+        {
+            int lastBlow = s.AttackStart + (int)MathF.Ceiling(done.StrikeProgress(Math.Max(1, done.Blows)) * s.AttackTicks);
+            if (now >= lastBlow + _recoveryTicks)
+            {
+                float pause = s.LastOutcome switch
+                {
+                    BlowOutcome.Blocked => CombatTuning.BlockedPause,
+                    BlowOutcome.Dodged => CombatTuning.DodgedPause,
+                    BlowOutcome.Missed => CombatTuning.MissedPause,
+                    _ => CombatTuning.HitPause,
+                };
+                s.AttackTech = -1;
+                s.CancelTick = now;
+                s.ReadyTick = Math.Max(s.ReadyTick, now + Math.Max(1, (int)MathF.Ceiling(pause / Dt(world))));
+                s.PauseUntil = Math.Min(s.PauseUntil, now);
+                s.DefendReadyTick = Math.Min(s.DefendReadyTick, now);
+                Detail($"recovery cut {s.AttackEnd - now} ticks early ({(BlockHeld ? "block" : _dodgeNew ? "dodge" : MoveIntent != Vector2.Zero ? "step" : "attack")})");
+            }
+        }
+
         bool committed = false;
         if (_blockDown || _dodgeNew)
         {
@@ -576,11 +954,14 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             {
                 int strikes = s.AttackStart + (int)MathF.Ceiling(own.StrikeProgress(1) * s.AttackTicks);
                 int feintBy = s.AttackStart + (int)MathF.Floor(FeintWindow * (strikes - s.AttackStart));
-                if (CancelSwing && now <= feintBy)
+                if (CancelSwing && (now <= feintBy || _readied))   // a readied swing (held at the ready point) can always be given up
                 {
                     s.AttackTech = -1;
                     s.NextBlow = 0;
                     FeintLockUntil = tick + _feintLockoutTicks;
+                    AttackHeld = false;
+                    _heldSwingSeq = -1;
+                    _readied = false;
                     Detail("feint: own swing given up");
                     ManualCombatMod.Notify("Feint");
                 }
@@ -663,6 +1044,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         if (WeaponMode == 2 && world.Characters.Cold(Slot) is { } shooter) shooter.Orders |= Meitou.Simulation.Player.CharacterOrders.Ranged;
 
         _blockDown = _blockUp = _blockTurned = false;
+        _releasedNow = false;
     }
 
     /// <summary>
@@ -835,7 +1217,12 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         _reloadRunning = goes;
 
         if (goes && !fighting) ReloadOutOfFight(world, ref s, cold!, x!);
+        // Its animation (Meitou plays crossbow poses only in fights): the reload's progress, -1 with none (CombatPatches.TechniqueOfPostfix).
+        OutOfFightReload = goes && !fighting && s.Loaded <= 0 && s.ReloadTime > 0 && s.ReloadLeft > 0 ? Math.Clamp(1 - s.ReloadLeft / s.ReloadTime, 0, 1) : -1;
     }
+
+    /// <summary>The out-of-fight reload's progress (0 to 1) while it runs, else -1: its animation plays.</summary>
+    public float OutOfFightReload { get; private set; } = -1;
 
     /// <summary>
     /// The reload out of fights (Meitou reloads only in a fight): as long as Kenshi's reload takes the character (the crossbow's reload time by
@@ -925,7 +1312,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             return;
         }
 
-        if (_chamberTicks <= 0 || _attackPaused || hit.Tick - _attackPressTick > _chamberTicks || hit.Tick < _attackPressTick) return;
+        if (_chamberTicks <= 0 || _attackPaused || _readied || hit.Tick - _attackPressTick > _chamberTicks || hit.Tick < _attackPressTick) return;   // a swing held at the ready point (not let go) chambers nothing
         if (me.AttackTech < 0 || them.AttackTech < 0) return;
         if (CombatPatches.Technique(Combat, me.AttackTech) is not { } mine || CombatPatches.Technique(Combat, them.AttackTech) is not { } theirs) return;
         // Only a swing from the same direction as the blow turns it aside, aimed as a block against it is (a thrust by a thrust, a blow at your left by
@@ -1012,7 +1399,10 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             + $"reload {(s.Loaded > 0 ? "loaded" : s.ReloadTime > 0 && s.ReloadLeft > 0 ? $"{1 - s.ReloadLeft / s.ReloadTime:P0}" : "0%")}"
             + $"{(ReloadHeld ? " held" : "")}{(_reloadRunning ? " running" : "")}, parry window {ParryTicks}t, chamber window {_chamberTicks}t, "
             + $"defence {(s.ReactTech >= 0 && CombatPatches.Technique(Combat, s.ReactTech) is { } rt ? $"'{rt.Name}' {(s.ReactTicks > 0 ? (now - s.ReactStart) / (float)s.ReactTicks : 0):0.00}" : "none")}"
-            + $"{(now < s.StunUntil ? $" stunned {s.StunUntil - now}t" : "")}{(now < s.DefendReadyTick ? $" defend ready in {s.DefendReadyTick - now}t" : "")}; "
+            + $"{(now < s.StunUntil ? $" stunned {s.StunUntil - now}t" : "")}{(now < s.DefendReadyTick ? $" defend ready in {s.DefendReadyTick - now}t" : "")}, "
+            + $"attack held {(AttackHeld ? "yes" : "no")}{(_readied ? " (readied)" : "")}{(UpperSwing ? " (upper body, walking)" : "")}, "
+            + $"swing {(s.AttackTech >= 0 && s.AttackTicks > 0 ? $"{(now - s.AttackStart) / (float)s.AttackTicks:0.00} of its clip, blow {s.NextBlow}" : "none")}, "
+            + $"yaw {world.Characters.Previous[Slot].Yaw:0.00}; "
             + $"{EnemiesReport(world, read, now)}; "
             + $"parries {Parries}, clashes {_clashes}, chambers {_chambers}";
     }
@@ -1054,10 +1444,20 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         // landing tick; the guard must not turn back to the aim then, or the blow lands on the wrong side (0.9.0's lost blocks).
         if (CombatPatches.Incoming(Combat, world, Slot, now) is { } b)
         {
-            int want = AutoBlockAt > 0 && Attackers >= AutoBlockAt ? b.Side : GuardFor(b.Side);
-            int meet = want == b.Side && !BlockHolds(world, b.Attacker, b.Seq, b.Blow, b.Lands)
-                ? CombatPatches.BeatenGuard(Combat, fighter, medical.Prone, b.Side)
+            // Blocking turns the character to the attacker: a blow from behind is met with the front guard against it (the character turns to
+            // it before it lands: the game turns a defender to the swing its block follows), and that attacker becomes the target.
+            int meetSide = TurnToBlocked ? FrontSide(world, b.Attacker, b.Blow, b.Side, b.Lands, now) : b.Side;
+            int want = AutoBlockAt > 0 && Attackers >= AutoBlockAt ? meetSide : GuardFor(meetSide);
+            int meet = want == meetSide && !BlockHolds(world, b.Attacker, b.Seq, b.Blow, b.Lands)
+                ? CombatPatches.BeatenGuard(Combat, fighter, medical.Prone, meetSide)
                 : CombatPatches.GuardIndex(Combat, fighter, medical.Prone, want);
+            if (TurnToBlocked && meet >= 0)
+            {
+                if (b.Attacker != s.TargetSlot && fighting) Retarget(world, ref s, b.Attacker, "blocked");
+                s.ReactedSlot = b.Attacker;
+                s.ReactedSeq = b.Seq;
+                s.ReactedBlow = b.Blow;
+            }
             if (meet < 0 || s.ReactTech == meet) return;   // up already (the game's defence update raised it), or none for that side
             s.ReactTech = meet;
             s.ReactTicks = CombatPatches.ClipTicks(Combat, world, Slot, cold, CombatPatches.Technique(Combat, meet)!);
@@ -1166,7 +1566,17 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     }
 
     /// <summary>The side the swing coming at the hand-fought character comes from (a Kenshi blow code), 0 with none; for the HUD.</summary>
-    int IncomingSide(World world, int now, bool fighting) => fighting ? CombatPatches.IncomingSide(Combat, world, Slot, now) : 0;
+    int IncomingSide(World world, int now, bool fighting)
+    {
+        _incomingAnimal = false;
+        if (!fighting) return 0;
+        var (side, attacker) = CombatPatches.IncomingSideFrom(Combat, world, Slot, now);
+        _incomingAnimal = attacker >= 0 && world.Characters.Cold(attacker)?.Fighter is { IsAnimal: true };
+        return side;
+    }
+
+    /// <summary>The swing coming at the character is an animal's (for the HUD's bigger warning; set by <see cref="IncomingSide"/>).</summary>
+    bool _incomingAnimal;
 
     /// <summary>Why a fighter did not start the swing the player asked for, from its fight state at the end of the last tick.</summary>
     static string WhyNoSwing(in CombatSlot s, int now)
@@ -1187,8 +1597,17 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     {
         Parries++;
         BlockPressTick = long.MinValue;   // one parry per press
+        SlowMo.Moment(SlowMo.Kind.Parry);
         if (_combos && _world is { } w) _riposteUntil = tick + (long)MathF.Ceiling(1.5f / Dt(w));
     }
+
+    /// <summary>
+    /// The side a blow is met from when blocking turns the character to its attacker: a blow from behind (its rear side, 7 or 9) as the swing's
+    /// own side, the way it comes at a character facing the attacker, when the turn can still happen before it lands (a tick at least); else
+    /// <paramref name="side"/> as it is.
+    /// </summary>
+    public int FrontSide(World world, int attacker, int blow, int side, long lands, long now) =>
+        side is >= 7 and <= 9 && lands > now ? CombatPatches.SwingSide(Combat, attacker, blow) is > 0 and var front ? front : side : side;
 
     /// <summary>The guard direction (a Kenshi blow code) the player's block takes against a blow from <paramref name="side"/>.</summary>
     public int GuardFor(int side)
@@ -1317,6 +1736,17 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         _counterTold = false;
         _dodgePaused = false;
         _perfectDodgeOf = long.MinValue;
+        AttackHeld = _readied = _incomingAnimal = false;
+        _heldSwingSeq = _blockedFrom = _fastWindupSeq = -1;
+        _reaimed = _switched = false;
+        UpperSwing = false;
+        _fightNow = false;
+        OutOfFightReload = -1;
+        _readySince = -1;
+        _heldActive = false;
+        Array.Fill(_defenceSeq, -1);
+        if (_riposteSwingSeq >= 0) SlowMo.Riposte(false);
+        _riposteSwingSeq = -1;
     }
 
     void CopySettings(World world)
@@ -1365,6 +1795,19 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         _spreadScale = (float)Math.Clamp(settings.SpreadScale, 0, 5);
         _steadyMin = (float)Math.Clamp(settings.SteadySpread, 0, 1);
         _steadySeconds = (float)Math.Clamp(settings.SteadyTime, 0.05, 10);
+        _holdToReady = settings.HoldToReady;
+        _readyPoint = (float)Math.Clamp(settings.ReadyPoint, 0.1, 0.95);
+        _heldWindup = (float)Math.Clamp(settings.HeldWindup, 1, 3);
+        _heldSideSwitch = settings.HeldSideSwitch;
+        _walkReadied = settings.WalkReadied;
+        _readiedWalkSpeed = (float)Math.Clamp(settings.ReadiedWalkSpeed, 0.1, 1);
+        _guardBreakTicks = Math.Max(1, (int)Math.Round(Math.Clamp(settings.HeldGuardTime, 0.05, 3) / tick));
+        _crossbowWalkSpeed = (float)Math.Clamp(settings.CrossbowWalkSpeed, 0.1, 1);
+        _reloadWhileWalking = settings.ReloadWhileWalking;
+        _reloadWalkSpeed = (float)Math.Clamp(settings.ReloadWalkSpeed, 0.05, 1);
+        _cutRecovery = settings.CutRecovery;
+        TurnToBlocked = settings.TurnToBlocked;
+        AnimalWindup = (float)Math.Clamp(settings.AnimalWindup, 0.4, 1);
     }
 
     public void Hash(ref StateHasher hasher)
@@ -1480,5 +1923,55 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         hasher.Add(_attackPressTick);
         hasher.Add(_stepInTick);
         hasher.Add(Parries);
+        hasher.Add(AttackHeld);
+        hasher.Add(_heldSwingSeq);
+        hasher.Add(_readied);
+        hasher.Add(_holdToReady);
+        hasher.Add(_readyPoint);
+        hasher.Add(_cutRecovery);
+        hasher.Add(TurnToBlocked);
+        hasher.Add(_blockedFrom);
+        hasher.Add(AnimalWindup);
+        hasher.Add(_incomingAnimal);
+        hasher.Add(_rateAppliedSeq);
+        hasher.Add(_riposteSwingSeq);
+        hasher.Add(_heldWindup);
+        hasher.Add(_fastWindupSeq);
+        hasher.Add(_heldSideSwitch);
+        hasher.Add(_reaimed);
+        hasher.Add(_switched);
+        hasher.Add(_walkReadied);
+        hasher.Add(_readiedWalkSpeed);
+        hasher.Add(_crossbowWalkSpeed);
+        hasher.Add(_reloadWhileWalking);
+        hasher.Add(_reloadWalkSpeed);
+        hasher.Add(OutOfFightReload);
+        hasher.Add(_readySince);
+        hasher.Add(_guardBreakTicks);
+        hasher.Add(_heldActive);
+        hasher.Add(_releasedNow);
+        hasher.Add(_guardHeldSeen);
+        for (int k = 0; k < _defenceSeq.Length; k++)
+            if (_defenceSeq[k] >= 0)
+            {
+                hasher.Add(k);
+                hasher.Add(_defenceSeq[k]);
+                hasher.Add(_defenceOk[k]);
+            }
+        for (int k = 0; k < _guardSince.Length; k++)
+            if (_guardSince[k] > int.MinValue / 2 || _guardFreed[k] > int.MinValue / 2)
+            {
+                hasher.Add(k);
+                hasher.Add(_guardSince[k]);
+                hasher.Add(_guardFreed[k]);
+            }
+        hasher.Add(_fightNow);
+        hasher.Add(UpperSwing);
+        for (int k = 0; k < _animalSlowSeq.Length; k++)
+            if (_animalSlowSeq[k] >= 0)
+            {
+                hasher.Add(k);
+                hasher.Add(_animalSlowSeq[k]);
+            }
     }
 }

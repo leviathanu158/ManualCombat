@@ -1,4 +1,4 @@
-# Manual Combat for Meitou (v0.9.26)
+# Manual Combat for Meitou (v0.9.32)
 
 Fight with your own hands, Mount & Blade style. Built for Meitou **0.22.2-nightly.20261121**. **Needs PZA's WASD & Controller Support**: manual combat is only on while its WASD movement is on (with WASD off, or without PZA's mod, your characters fight the normal Kenshi way).
 

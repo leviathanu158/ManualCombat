@@ -17,8 +17,8 @@ public static class Hud
     // Published by ManualCombatSystem.Schedule each tick, read on the interface's thread.
     static volatile bool s_inFight;
     static volatile int s_incoming;
-    /// <summary>The incoming swing is an animal's (the bigger warning).</summary>
-    static volatile bool s_incomingAnimal;
+    /// <summary>The sides of every swing coming at the character (a bit per Kenshi blow code).</summary>
+    static volatile int s_incomingSides;
 
     /// <summary>Whether the hand-fought character is in a fight now (the in-fight controls and the arrows).</summary>
     public static bool InFight => s_inFight;
@@ -43,10 +43,10 @@ public static class Hud
     public static float Steady => Ranged ? Volatile.Read(ref s_steady) : 0;
 
     public static void Publish(bool inFight, int incomingSide, Meitou.Simulation.CharacterId target, bool ranged, float spread,
-        int loaded = 0, int shots = 0, float steady = 0, float reload = 0, bool reloading = false, bool incomingAnimal = false)
+        int loaded = 0, int shots = 0, float steady = 0, float reload = 0, bool reloading = false, int incomingSides = 0)
     {
         s_ranged = ranged;
-        s_incomingAnimal = incomingAnimal;
+        s_incomingSides = incomingSides;
         Volatile.Write(ref s_spread, spread);
         Volatile.Write(ref s_steady, steady);
         Volatile.Write(ref s_reload, reload);
@@ -64,7 +64,8 @@ public static class Hud
         return t < 0 ? null : new Meitou.Simulation.CharacterId((int)(t >> 32), (int)(uint)t);
     }
 
-    static FieldInfo? s_overlay;
+    static FieldInfo? s_overlay, s_sizeX, s_sizeY;
+    static Type? s_sizeType;
 
     /// <summary>The line under the crosshair and when it was set (Environment.TickCount64); shown for <see cref="LineMs"/>, fading out.</summary>
     static volatile string? s_line;
@@ -187,7 +188,13 @@ public static class Hud
         if (args.Length > 1 && args[1] is true) return null;   // covered (loading)
         if (s_overlay!.GetValue(loop) is not DebugOverlay o || args.Length == 0 || args[0] is not { } size) return null;
         var t = size.GetType();
-        if (t.GetField("X")?.GetValue(size) is not int w || t.GetField("Y")?.GetValue(size) is not int h || w <= 0 || h <= 0) return null;
+        if (!ReferenceEquals(t, s_sizeType))   // the size struct's fields, looked up once (this runs several times a frame)
+        {
+            s_sizeType = t;
+            s_sizeX = t.GetField("X");
+            s_sizeY = t.GetField("Y");
+        }
+        if (s_sizeX?.GetValue(size) is not int w || s_sizeY?.GetValue(size) is not int h || w <= 0 || h <= 0) return null;
         return (o, w, h, h / 1080f, new Vector2(w / 2f, h / 2f));   // the centre: PZA's crosshair in its views
     }
 
@@ -214,15 +221,27 @@ public static class Hud
             int aim = InputWatch.AimNow;
             if (aim != Dir.None) Arrow(o, c, aim, s, 40, 14, 10, Fade(InputWatch.Blocking ? Blue : Gold, a), outward: true, edge: true, a);
 
-            if (settings.ArrowIncoming && ScreenSide(s_incoming, settings.MirrorGuards) is { } incoming)
+            if (settings.ArrowIncoming)
             {
-                if (s_incomingAnimal && settings.AnimalWarning)
+                // One red arrow for each side a swing comes from (a group fight shows them all); the blow landing soonest gets the largest.
+                // Stronger arrows: larger and more opaque, always somewhat see-through.
+                bool strongArrows = settings.StrongIncomingArrows;
+                float strong = strongArrows ? Math.Clamp(a * 1.6f, 0.55f, 0.75f) : a;
+                int? soonest = ScreenSide(s_incoming, settings.MirrorGuards);
+                int sides = s_incomingSides, shown = 0;
+                for (int code = 1; code < 16; code++)
                 {
-                    // An animal's attack: bigger and stronger, but always somewhat see-through.
-                    float strong = Math.Clamp(a * 1.6f, 0.55f, 0.75f);
-                    Arrow(o, c, incoming, s, 64, 19, 13, Fade(Red, strong), outward: false, edge: true, strong);
+                    if ((sides & (1 << code)) == 0 || ScreenSide(code, settings.MirrorGuards) is not { } screen) continue;
+                    if (screen == soonest || (shown & (1 << screen)) != 0) continue;
+                    shown |= 1 << screen;
+                    if (strongArrows) Arrow(o, c, screen, s, 66, 15, 10, Fade(Red, strong * 0.85f), outward: false, edge: true, strong * 0.85f);
+                    else Arrow(o, c, screen, s, 66, 14, 10, Fade(Red, a), outward: false, edge: true, a);
                 }
-                else Arrow(o, c, incoming, s, 66, 14, 10, Fade(Red, a), outward: false, edge: true, a);
+                if (soonest is { } first)
+                {
+                    if (strongArrows) Arrow(o, c, first, s, 64, 19, 13, Fade(Red, strong), outward: false, edge: true, strong);
+                    else Arrow(o, c, first, s, 66, 14, 10, Fade(Red, a), outward: false, edge: true, a);
+                }
             }
             o.Flush(w, hgt);
         }

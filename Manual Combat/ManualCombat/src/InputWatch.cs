@@ -188,6 +188,7 @@ public static partial class InputWatch
             if (!s_alt) TrackFlick(input.MouseDelta);
             SendFootwork(__result);
             SendReloadHold(__result);
+            SendAimLook();
 
             // A held attack re-aimed (hold to ready): the held swing switches side.
             if (s_attackByMouse && !s_controlled.IsNone && AimNow is var held && held != Dir.None && held != s_attackSentDir)
@@ -220,6 +221,23 @@ public static partial class InputWatch
     /// The crossbow reload is held while the crossbow is empty and: left click is held on it in a fight, Mouse 4 (the dodge key) out of fights, or the
     /// reload key anywhere. Sent when it changes; the reload runs only while held and standing still (ManualCombatSystem.ReloadControl).
     /// </summary>
+    /// <summary>
+    /// With the crossbow out in a fight (and the setting on), the camera's forward every 6 control ticks while it has turned since the last sent,
+    /// so the character keeps the enemy under the crosshair as its target. Alt held (the free cursor) sends nothing.
+    /// </summary>
+    static void SendAimLook()
+    {
+        if (s_controlled.IsNone || !Live || s_alt || !Hud.Ranged || !ManualCombatMod.Settings.CrossbowAutoTarget) return;
+        if (s_controlTick - s_aimLookAt < 6) return;
+        var look = CameraForward();
+        if (look == Vector2.Zero || Vector2.Dot(look, s_aimLookSent) > 0.9995f && s_controlTick - s_aimLookAt < 30) return;   // still: once a second
+        Send(new ManualAimLook(s_controlled, look) { Tick = s_ctx.Tick });
+        s_aimLookSent = look;
+        s_aimLookAt = s_controlTick;
+    }
+    static Vector2 s_aimLookSent;
+    static long s_aimLookAt = long.MinValue / 2;
+
     static void SendReloadHold(ActionState a)
     {
         if (s_controlled.IsNone) return;

@@ -111,7 +111,13 @@ public static class UpperBody
                 var d = list[i];
                 if (!IsCopyable(d)) continue;
                 map[i] = list.Count;
-                list.Add(d with { Id = d.Id + Suffix, Name = d.Name + Suffix, Area = AnimationArea.Upper, Relocates = false });
+                // Never holding the character still (the crossbow's aim and reload records disable movement) nor counted as a whole-body action (which
+                // takes the legs' weight away: Publish counts an action that is no technique as whole-body), so the legs walk under it.
+                list.Add(d with
+                {
+                    Id = d.Id + Suffix, Name = d.Name + Suffix, Area = AnimationArea.Upper, Relocates = false, DisablesMovement = false,
+                    IsAction = d.Technique,
+                });
             }
             s_copies.AddOrUpdate(library, map);
             int copies = list.Count - count;

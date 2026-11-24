@@ -202,6 +202,9 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     public bool HasShotRay { get; private set; }
     /// <summary>Right click held with the crossbow out: the aim steadies (0 to 1).</summary>
     bool _steadyHeld;
+    /// <summary>The camera's forward from the last aim report (crossbow), and when the target last followed it.</summary>
+    Vector2? _aimLook;
+    long _aimRetargetTick = long.MinValue / 2;
     float _steadyLevel;
     /// <summary>The reticle's spread now: the half-angle in degrees a shot may stray from the crosshair.</summary>
     public float ShotSpread { get; private set; }
@@ -302,8 +305,6 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     }
 
     /// <summary>The PlayRate patch gave the player's swing <paramref name="seq"/> its combo speed (when the JIT has not inlined PlayRate).</summary>
-    public void RateApplied(int seq) => _rateAppliedSeq = seq;
-    int _rateAppliedSeq = -1;
     /// <summary>The riposte swing in progress (its AttackSeq; -1 none), for its slow motion.</summary>
     int _riposteSwingSeq = -1;
 
@@ -357,6 +358,37 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             if (c >= slots.Length) continue;
             ref var a = ref slots[c];
             if (a.AttackSeq == seq && a.AttackTech >= 0 && a.AttackTicks > 0 && AnimalWindup > 0) Rescale(ref a, now, 1 / AnimalWindup);
+        }
+    }
+
+    /// <summary>A side switch's tick, how long after it a release waits (Switch time), and a release waiting for it.</summary>
+    long _switchTick = long.MinValue / 2;
+    int _switchLockTicks = 3;
+    bool _releaseDeferred, _releaseDeferredPaused;
+    /// <summary>Until this tick the swing animations cross-fade slowly (a side switch's morph), and how many ticks that lasts.</summary>
+    long _morphUntil = long.MinValue / 2;
+    int _morphTicks = 9;
+    /// <summary>A side switch's morph is under way (for the animation's slower technique fade), and the fade's length in seconds.</summary>
+    public bool Morphing => CurrentTick <= _morphUntil;
+    /// <summary>A side switch waits for the morph under way to finish.</summary>
+    bool _switchPending;
+    public float MorphSeconds { get; private set; } = 0.3f;
+
+    /// <summary>
+    /// The held attack is let go: the moment it is unleashed. A chamber is timed from it (readied, still winding up, or switched to the blow's side
+    /// while held), never from the press long before; switching sides alone chambers nothing.
+    /// </summary>
+    void LetGo(long tick, bool paused)
+    {
+        AttackHeld = false;
+        _releasedNow = true;
+        _attackPressTick = tick;
+        _attackPaused = paused;
+        if (_readied) Detail("attack let go: the readied swing strikes");
+        else
+        {
+            Detail("attack let go (the swing was not readied yet)");
+            if (AttackSeq >= 0) AttackUntil = Math.Max(AttackUntil, tick + _bufferTicks);   // not started yet: a press as any
         }
     }
 
@@ -498,6 +530,9 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
                     HasShotRay = false;   // no crosshair ray: Kenshi's own aim at the target
                     FirePress(world, float.IsFinite(a.Look.X) && float.IsFinite(a.Look.Y) ? a.Look : Vector2.Zero);
                     break;
+                case ManualAimLook l when Is(l.Character) && ManualCrossbow && Ranged:
+                    if (float.IsFinite(l.Look.X) && float.IsFinite(l.Look.Y) && l.Look.LengthSquared() > 0.25f) _aimLook = l.Look;
+                    break;
                 case ManualBlock b when Is(b.Character) && ManualCrossbow && Ranged:
                     _steadyHeld = b.Held;   // right click with the crossbow out steadies the aim
                     break;
@@ -527,20 +562,17 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
                     Detail($"held attack aimed {Dir.Name(m.Direction)}");
                     break;
                 case ManualAttackRelease r when Is(r.Character):
-                    if (!AttackHeld) break;
-                    AttackHeld = false;
-                    _releasedNow = true;
-                    // Letting go is when the held attack is unleashed: a chamber is timed from it (readied, still winding up, or switched to the
-                    // blow's side while held), never from the press long before. Switching sides alone chambers nothing: the release must come
-                    // within the chamber window before the blow lands.
-                    _attackPressTick = world.Tick;
-                    _attackPaused = r.InPause;
-                    if (_readied) Detail("attack let go: the readied swing strikes");
-                    else
+                    if (!AttackHeld || _releaseDeferred) break;
+                    // Right after a side switch (or with one in this same moment) the weapon is still travelling to the new side: the release
+                    // waits until the switch time has passed (Schedule lets it go then).
+                    if (_reaimed || _switchPending || world.Tick - _switchTick < _switchLockTicks)
                     {
-                        Detail("attack let go (the swing was not readied yet)");
-                        if (AttackSeq >= 0) AttackUntil = Math.Max(AttackUntil, world.Tick + _bufferTicks);   // not started yet: a press as any
+                        _releaseDeferred = true;
+                        _releaseDeferredPaused = r.InPause;
+                        Detail("attack let go during a side switch: it strikes once the switch is done");
+                        break;
                     }
+                    LetGo(world.Tick, r.InPause);
                     break;
                 case ManualBlock b when Is(b.Character):
                     if (b.Held && !BlockHeld)
@@ -643,7 +675,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         Hud.Publish(fighting && !leaving, IncomingSide(world, now, fighting),
             fighting ? new CharacterId(s.TargetSlot, s.TargetGeneration) : CharacterId.None, s.Ranged, ShotSpread,
             s.Loaded, world.Characters.Cold(Slot)?.Fighter?.Crossbow?.NumShots ?? 0, _steadyLevel,
-            s.Loaded > 0 ? 1 : s.ReloadTime > 0 && s.ReloadLeft > 0 ? 1 - s.ReloadLeft / s.ReloadTime : 0, _reloadRunning, _incomingAnimal);
+            s.Loaded > 0 ? 1 : s.ReloadTime > 0 && s.ReloadLeft > 0 ? 1 - s.ReloadLeft / s.ReloadTime : 0, _reloadRunning, _incomingSides);
 
         // The target button: the enemy nearest the camera's aim.
         if (_targetLook is { } look)
@@ -716,7 +748,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             AttackSeq = -1;
             _heldSwingSeq = AttackHeld ? s.AttackSeq : -1;
             // Its combo or riposte speed, when the PlayRate patch could not give it (the JIT inlined PlayRate): set now, the clip kept where it is.
-            if (NextSwingRate > 1 && _rateAppliedSeq != s.AttackSeq && s.AttackTech >= 0)
+            if (NextSwingRate > 1 && s.AttackTech >= 0)
             {
                 Rescale(ref s, now, NextSwingRate);
                 Detail($"swing sped up x{NextSwingRate:0.00} (clip now {s.AttackTicks} ticks)");
@@ -729,18 +761,19 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
                 ManualCombatMod.Notify("Riposte");
                 Detail($"riposte: the swing plays x{NextSwingRate:0.00}");
             }
-            // A side switched while held (or as it was let go): the new swing starts part way into its wind-up (half way to the ready point), so the
-            // change reads as a turn of the weapon rather than a new swing from nothing.
+            // A side switched while held: the new side's swing starts half way to its ready point and winds on at its own speed (no held
+            // speed-up), while the animation morphs into it over the Switch blend time (BlendStepPostfix).
             if (_switched && s.AttackTech >= 0 && s.NextBlow == 1 && s.AttackTicks > 0 && CombatPatches.Technique(Combat, s.AttackTech) is { } turned)
             {
                 int jump = (int)MathF.Floor(0.5f * _readyPoint * turned.StrikeProgress(1) * s.AttackTicks);
                 s.AttackStart -= jump;
                 s.AttackEnd -= jump;
+                _morphUntil = tick + _morphTicks;
             }
             if (AttackHeld && s.AttackTech >= 0 && s.NextBlow == 1 && s.AttackTicks > 0)
             {
                 // Held: the wind-up into the ready pose plays faster (undone when let go).
-                if (_heldWindup > 1)
+                if (_heldWindup > 1 && !_switched)
                 {
                     Rescale(ref s, now, _heldWindup);
                     _fastWindupSeq = s.AttackSeq;
@@ -781,12 +814,23 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
             _fastWindupSeq = -1;
         }
 
-        // A side switch while held: the held swing is given up and a swing of the new side starts at once (no feint lockout), part way in.
+        // A side switch while held morphs (his play tests of 0.9.27-0.9.28: the snap was too fast, the unwind looked wrong): the held swing is
+        // given up and the new side's swing starts half way to its ready point, winding on at its own speed, while the animation cross-fades from
+        // the held pose into it over the Switch blend time (CombatPatches.BlendStepPostfix slows Meitou's 0.2 s technique fade for this character).
+        // One morph at a time (his play test of 0.9.29: quick switches looked horrible): a switch made while a morph still plays waits until it
+        // is done (the Switch blend time after the last switch), and then goes to the side aimed last; aiming back at the side the swing is
+        // already on needs no switch.
         if (_reaimed)
         {
             _reaimed = false;
+            if (_heldSideSwitch && (AttackHeld || _releasedNow)) _switchPending = true;
+        }
+        if (_switchPending && tick - _switchTick >= _morphTicks)
+        {
+            _switchPending = false;
             // (Let go in the same moment as the switch: the switch still counts, and the new side strikes.)
-            if (_heldSideSwitch && (AttackHeld || _releasedNow) && s.AttackTech >= 0 && s.AttackSeq == _heldSwingSeq && s.NextBlow == 1)
+            if (_heldSideSwitch && (AttackHeld || _releasedNow) && s.AttackTech >= 0 && s.AttackSeq == _heldSwingSeq && s.NextBlow == 1
+                && AttackDir != _lastSwingAim)
             {
                 bool wasRiposte = _riposteSwingSeq == s.AttackSeq;
                 s.AttackTech = -1;
@@ -799,9 +843,18 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
                 AttackUntil = tick + _bufferTicks;
                 _attackReported = false;
                 _switched = true;
+                _switchTick = tick;
+                _morphUntil = tick + _morphTicks + 1;   // the held swing fades out slowly too
                 if (wasRiposte) _riposteUntil = tick + _bufferTicks;   // the switched riposte is still a riposte
                 Detail($"held swing switched to {Dir.Name(AttackDir)}");
             }
+        }
+
+        // A release made during a side switch strikes once the switch time is over.
+        if (_releaseDeferred && !_switchPending && tick - _switchTick >= _switchLockTicks)
+        {
+            _releaseDeferred = false;
+            if (AttackHeld) LetGo(tick, _releaseDeferredPaused);
         }
 
         // Hold to ready: while the button is held, a press waits for its swing (no buffer running out), and the swing it started stops at the
@@ -1056,8 +1109,10 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     void Clash(World world, ref CombatSlot s, int now)
     {
         if (s.AttackTech < 0 || s.NextBlow <= 0 || s.AttackTicks <= 0) return;
+        // A swing still held (winding up or at the ready point) clashes with nothing, as it chambers nothing: only a swing let go meets one.
+        if (AttackHeld && s.AttackSeq == _heldSwingSeq) return;
         if (CombatPatches.Technique(Combat, s.AttackTech) is not { } mine) return;
-        int myLand = s.AttackStart + (int)MathF.Ceiling(mine.StrikeProgress(s.NextBlow) * s.AttackTicks);
+        int myLand =s.AttackStart + (int)MathF.Ceiling(mine.StrikeProgress(s.NextBlow) * s.AttackTicks);
         int mySide = mine.DirectionOf(s.NextBlow);
 
         var slots = CombatPatches.WriteSlots(Combat);
@@ -1163,6 +1218,18 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         {
             _rangeTold = true;
             ManualCombatMod.Notify("Out of range");
+        }
+        // Crossbow targets what you aim at: the enemy nearest the crosshair becomes the target (the character turns to it), at most every 10 ticks.
+        if (_aimLook is { } aimLook)
+        {
+            _aimLook = null;
+            if (s.TargetSlot >= 0 && tick - _aimRetargetTick >= 10
+                && Targets.Pick(world, Combat, Slot, aimLook, exclude: -1, reachOnly: false, cone: Targets.CrosshairCone) is { } sighted
+                && sighted != s.TargetSlot)
+            {
+                _aimRetargetTick = tick;
+                Retarget(world, ref s, sighted, "under the crosshair");
+            }
         }
         if (_fireNew)
         {
@@ -1568,15 +1635,27 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
     /// <summary>The side the swing coming at the hand-fought character comes from (a Kenshi blow code), 0 with none; for the HUD.</summary>
     int IncomingSide(World world, int now, bool fighting)
     {
-        _incomingAnimal = false;
+        _incomingSides = 0;
         if (!fighting) return 0;
-        var (side, attacker) = CombatPatches.IncomingSideFrom(Combat, world, Slot, now);
-        _incomingAnimal = attacker >= 0 && world.Characters.Cold(attacker)?.Fighter is { IsAnimal: true };
-        return side;
+        // Every swing on its way at the character (its blow not landed yet): the sides they come from, a bit per Kenshi blow code.
+        var read = CombatPatches.ReadSlots(Combat);
+        var prev = world.Characters.Previous;
+        for (int c = 0; c < read.Length && c < prev.Length; c++)
+        {
+            if (c == Slot || !prev[c].Alive) continue;
+            ref readonly var e = ref read[c];
+            if (e.AttackTech < 0 || e.NextBlow <= 0 || e.AttackTicks <= 0 || e.TargetSlot != Slot || e.TargetGeneration != Generation) continue;
+            if (CombatPatches.Technique(Combat, e.AttackTech) is not { } t) continue;
+            float at = (now - e.AttackStart) / (float)e.AttackTicks;
+            if (at <= 0 || at >= t.StrikeProgress(e.NextBlow)) continue;
+            int side = CombatPatches.BlowSide(Combat, world, Slot, c, e.NextBlow);
+            if (side is > 0 and < 16) _incomingSides |= 1 << side;
+        }
+        return CombatPatches.IncomingSide(Combat, world, Slot, now);   // the one landing soonest
     }
 
-    /// <summary>The swing coming at the character is an animal's (for the HUD's bigger warning; set by <see cref="IncomingSide"/>).</summary>
-    bool _incomingAnimal;
+    /// <summary>The sides of every swing coming at the character (a bit per Kenshi blow code), for the HUD's arrows; set by IncomingSide.</summary>
+    int _incomingSides;
 
     /// <summary>Why a fighter did not start the swing the player asked for, from its fight state at the end of the last tick.</summary>
     static string WhyNoSwing(in CombatSlot s, int now)
@@ -1736,9 +1815,15 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         _counterTold = false;
         _dodgePaused = false;
         _perfectDodgeOf = long.MinValue;
-        AttackHeld = _readied = _incomingAnimal = false;
+        AttackHeld = _readied = false;
+        _incomingSides = 0;
         _heldSwingSeq = _blockedFrom = _fastWindupSeq = -1;
         _reaimed = _switched = false;
+        _releaseDeferred = _releaseDeferredPaused = _switchPending = false;
+        _morphUntil = long.MinValue / 2;
+        _aimLook = null;
+        _aimRetargetTick = long.MinValue / 2;
+        _switchTick = long.MinValue / 2;
         UpperSwing = false;
         _fightNow = false;
         OutOfFightReload = -1;
@@ -1798,6 +1883,9 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         _holdToReady = settings.HoldToReady;
         _readyPoint = (float)Math.Clamp(settings.ReadyPoint, 0.1, 0.95);
         _heldWindup = (float)Math.Clamp(settings.HeldWindup, 1, 3);
+        _switchLockTicks = Math.Max(0, (int)Math.Round(Math.Clamp(settings.SwitchTime, 0, 0.5) / tick));
+        MorphSeconds = (float)Math.Clamp(settings.SwitchBlend, 0.05, 1);
+        _morphTicks = Math.Max(1, (int)Math.Round(MorphSeconds / tick));
         _heldSideSwitch = settings.HeldSideSwitch;
         _walkReadied = settings.WalkReadied;
         _readiedWalkSpeed = (float)Math.Clamp(settings.ReadiedWalkSpeed, 0.1, 1);
@@ -1932,8 +2020,7 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         hasher.Add(TurnToBlocked);
         hasher.Add(_blockedFrom);
         hasher.Add(AnimalWindup);
-        hasher.Add(_incomingAnimal);
-        hasher.Add(_rateAppliedSeq);
+        hasher.Add(_incomingSides);
         hasher.Add(_riposteSwingSeq);
         hasher.Add(_heldWindup);
         hasher.Add(_fastWindupSeq);
@@ -1950,6 +2037,17 @@ public sealed class ManualCombatSystem(CombatSystem combat) : ITickSystem, IStat
         hasher.Add(_guardBreakTicks);
         hasher.Add(_heldActive);
         hasher.Add(_releasedNow);
+        hasher.Add(_switchTick);
+        hasher.Add(_switchLockTicks);
+        hasher.Add(_releaseDeferred);
+        hasher.Add(_releaseDeferredPaused);
+        hasher.Add(_morphUntil);
+        hasher.Add(_aimLook.HasValue);
+        if (_aimLook is { } aimLookHashed) hasher.Add(aimLookHashed);
+        hasher.Add(_aimRetargetTick);
+        hasher.Add(_morphTicks);
+        hasher.Add(_switchPending);
+        hasher.Add(MorphSeconds);
         hasher.Add(_guardHeldSeen);
         for (int k = 0; k < _defenceSeq.Length; k++)
             if (_defenceSeq[k] >= 0)

@@ -1,11 +1,13 @@
 # Manual Combat (Meitou code mod)
 
 Full background is in `ManualCombat-handover.txt` (the original claude.ai handover). This file has the parts every session needs.
+**Also read `Manual Combat\NEXT-SESSION.txt`**: where things stand, what is uncommitted, open items, how he likes to work, and the test scripts (now in `Manual Combat\ManualCombat\tools\test\`).
+**Keep NEXT-SESSION.txt current (his standing rule, 2026-11-22):** after every big change (a new build he gets, a design decision, a finding, a commit, a new open item or test tool), update its STATE / OPEN / WORK sections in the same turn, so nothing is lost when the context runs out.
 
 ## Project
 - Mount & Blade style melee for **MeitouClient**, the open-source C#/.NET reimplementation of Kenshi (github.com/VlcekM/MeitouClient). It adds directional attacks aimed by mouse flick, hold-to-block, parries, feints, combos, clashing, chambering, hyper armor and manual crossbows.
 - Works together with PZA's "WASD & Controller Support" mod (github.com/PZA-Mods/PZAMeitouWASDController). Manual combat is active only while PZA's WASD is on.
-- License: GPLv3. Current version: **0.9.26**.
+- License: GPLv3. Current version: **0.9.32**.
 - Source: `Manual Combat\ManualCombat\` (src\*.cs, ManualCombat.csproj, meitou.json, build.bat/build.ps1, README.md).
 - Meitou reference source (read-only, outside this repo): `C:\KenshiRef\MeitouClient` (git checkout at the commit of the installed Meitou build).
 
@@ -172,6 +174,28 @@ PZA plans an API in his WASD mod and will patch Manual Combat to use it. It will
 - Reload walking speed raised to 0.2 in 0.9.26 (his choice): at 0.1 the leg clips (tied to the real speed) played so slowly it looked like standing.
 - Released held swings are left to Kenshi: in tests vs a maxed bandit, blocked when it guarded, hit when it was mid-swing itself (a trade), missed when out of reach.
 - **Enemy block rolls vs a held attack** (his rule: blocks follow their stats): an enemy's first defence decision per (swing, held/let go) stands (ChooseDefence postfix, FirstDefence/DefenceKey, per-slot _defenceSeq/_defenceOk); a lost roll is not re-rolled while the same swing is held. A side switch (new swing) or the release gets a fresh roll. Built and determinism-checked, not tested in game (test runs were stopped).
+
+## 0.9.27 (2026-11-22, from his feedback file; tested through the test channel except the bolts)
+- **Crossbow walking**: the upper-body copies now clear DisablesMovement (the aim/reload records hold a character still) and IsAction for non-techniques (Publish counted an action that is no technique as whole-body, taking the legs' weight): out of fights Su walks while reloading (59 units in 2 s, reload going, crossbow in hand); in fights the legs should now walk under the aim/reload (check by eye).
+- **No clash or crush-through from a held swing** (Clash skips the held swing): verified, 4 enemy swings into a held overhead, no clash.
+- **Side switch transition**: the new side winds up from its start at its own speed (no half-way jump, no held speed-up); a release within Switch time (0.1 s) of a switch (or with one in the same moment) waits for it (_releaseDeferred, LetGo). Verified: 3 ticks.
+- **Incoming arrows**: one red arrow per side a swing comes from (_incomingSides, every enemy swing whose blow is pending), the soonest largest; the stronger look for all (StrongIncomingArrows replaces the animal-only AnimalWarning). Rear blows still have no arrow.
+- **Aimed bolts** (AimedBolts): Kenshi picks a bolt's part at random by hit weights (MedicalState.ChoosePart, direction 6). BoltHit prefix computes where the bolt's line enters the victim's body cylinder (BodyHeight 18 x ScaleK, race footprint radius): head >= 0.82 of the height, chest/stomach, arms out to the side, legs below 0.48 (left/right by the side struck); the ChoosePart postfix takes that part (thread-static, once). Not tested in game (he tests aiming by hand); left/right handedness unverified.
+- **FPS**: all timing windows are in simulation ticks (presses carry the tick they were made on), so they are game time, not frames; only the input sampling (once a frame) gets coarser at very low FPS.
+- A 25 s freeze at "the view warmed up" in two launches was a fluke (the next launch: 7 s).
+
+## 0.9.28-0.9.29 (2026-11-22, his play tests: the switch snap was too fast, then the unwind looked wrong)
+- **Switch morph (0.9.29)**: the unwind (0.9.28) is gone. A switch cuts the held swing and starts the new side half way to its ready point at its own speed; for SwitchBlend (0.3 s, Meitou fades techniques in 0.2 s) the hand-fought character's technique layers cross-fade at 1/SwitchBlend (ManualCombatSystem.Morphing / _morphUntil; TechniqueOf postfix marks the character on a thread-static, AnimationSystem.BlendStep postfix sets the rate; the log says "side switch: the swing morph blend is in use" the first time it applies, so a JIT-inlined BlendStep would show as that line never appearing). A release within Switch time (0.1 s) of a switch waits.
+- **Crossbow targets what you aim at (0.9.29, CrossbowAutoTarget)**: with the crossbow out in a fight InputWatch sends ManualAimLook (camera forward) every 6 control ticks while it turns, once a second while still; the enemy nearest the crosshair (Targets.Pick, 35 deg cone) becomes the target (at most every 10 ticks), so the character turns to it.
+- Both built and determinism-checked; he tests the look by hand.
+- **One morph at a time (0.9.30, his design)**: a switch made while a morph plays waits (_switchPending) until SwitchBlend has passed since the last switch, then goes to the side aimed last; aiming back at the swing's current side (_lastSwingAim) needs no switch. SwitchBlend default 0.2 s is both the morph length and the gap. A release waits for a pending switch, then Switch time.
+
+## 0.9.31 (2026-11-22, optimisation)
+- **Benchmark** (Meitou --play-bench on mctest, segments settle,idle,orbit,fight, hidden window; scratchpad bench.ps1, -NoMod uses a mods.cfg copy without ManualCombat.mod written WITHOUT a BOM): 0.9.30 vs mod off identical within noise (4.0 ms median, ~230-240 fps every segment; ManualCombatSystem not among the costly systems). His "feels slower" is not the mod.
+- Per-tick reflection replaced: Eff, Trained, Guarding, IndoorsMod, Fits, MeleeDrawn, MovesCategory are AccessTools.MethodDelegate direct calls; MostAdvanced/BlowSide no longer reflected (CombatPatches.MostAdvanced scans the read slots the same way: target, ReactionScanRadius, progress to the next blow, lower slot wins a tie). Hud caches the frame-size fields. The dead PlayRate postfix (JIT-inlined, never ran) and RateApplied are gone. Blocks/parries re-tested 4/4 after the change.
+
+## 0.9.32 (2026-11-22, his choice: tuning settings into an Advanced group)
+- 42 tuning settings moved to the end of ManualCombatSettings with SubGroup "Advanced" (Meitou gathers a sub-group at its first member and opens it the first time it is shown); property names unchanged, so saved values carry over. About 37 stay in the main list (on/off features, look, block beaten chance, longest enemy wait, auto-block, slow motion toggles, debug).
 
 ## Open / next
 - Tested 2026-11-20/21 through the test channel: blocks, parries, combos, clash and crush-through, chamber, hyper armor, dodge, crossbow (swap, reload, shot, steadying). He liked scenario tests and fuzzing via the test channel.

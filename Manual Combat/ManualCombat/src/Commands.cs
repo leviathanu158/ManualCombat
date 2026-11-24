@@ -49,6 +49,12 @@ public sealed record ManualAttack(CharacterId Character, int Direction, System.N
     public bool Held { get; init; }
 }
 
+/// <summary>
+/// With the crossbow out in a fight, the camera's flat forward (X, Z) every few control ticks: the character turns on the enemy nearest the
+/// crosshair (Crossbow targets what you aim at).
+/// </summary>
+public sealed record ManualAimLook(CharacterId Character, System.Numerics.Vector2 Look) : SimCommand;
+
 /// <summary>The aim changed while the attack button is held: the held swing switches to that side.</summary>
 public sealed record ManualAttackAim(CharacterId Character, int Direction) : SimCommand;
 

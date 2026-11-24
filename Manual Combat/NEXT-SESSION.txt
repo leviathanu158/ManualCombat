@@ -1,0 +1,45 @@
+MANUAL COMBAT - NOTES FOR THE NEXT SESSION (written 2026-11-22, end of a long session)
+Read CLAUDE.md first (it is loaded automatically). This file adds where things stand and how to work.
+
+STATE
+- Installed: 0.9.32 (Kenshi\mods\ManualCombat). Meitou 0.22.2-nightly.20261122.2 (commit d0fa449; C:\KenshiRef\MeitouClient checked out at it).
+- Last commit: 3482bd4 / tag v0.9.26. 0.9.27 to 0.9.32 are NOT committed yet. Commit when he asks (git: "C:\Program Files\Git\cmd\git.exe",
+  message via -F file; end with "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>").
+- Version history 0.9.20-0.9.32: see the per-version sections in CLAUDE.md.
+
+WHAT HE CONFIRMED WORKS (his hand tests)
+- Held swings, walking while holding, side-switch morph (one 0.2 s morph at a time, 0.9.30), crossbow auto-target (0.9.29), aimed bolts
+  (0.9.27), pointer hidden in fights, crossbow in hand for out-of-fight reloads.
+
+OPEN / LATER
+- Low-stance wind-ups look off over walking legs (upper body copy keeps the crouch) - known, not fixed.
+- Rear blows (behind) still show no incoming arrow.
+- Aimed bolts: left/right limbs may be swapped (handedness not verified).
+- Settings: 42 tuning settings in the "Advanced" sub-group (0.9.32, his choice). He may want to prune further later.
+- Soak/fuzz test: decided to skip for now (cost ~30-40k tokens first time); do one before a public Workshop release or after a big
+  Meitou update. A regression script (block/parry/chamber/switch/crossbow) would be the cheaper first step.
+- Workshop page text, PZA API handoff, tested settings as defaults (see CLAUDE.md "Open / next").
+
+HOW TO WORK WITH HIM (beyond CLAUDE.md)
+- Plain words, short replies. He decides design; ask with real options.
+- He often prefers to test looks/feel himself: offer, don't insist. Only run in-game tests that check logic.
+- Test in SHORT steps (one scenario per call, a few minutes max), check results, stop and fix a stuck test at once (he stops long runs).
+- Build: build.ps1 (close the game first: the DLL is locked while it runs). Bump version in meitou.json, ManualCombat.csproj, README.
+- After a build: headless check = meitou-tools.exe mod-check "%LOCALAPPDATA%\Meitou\save\mctest" (run from %LOCALAPPDATA%\Meitou with
+  KENSHI_PATH set); look for "manualcombat: ready" and "PASS".
+- PowerShell 5.1: Set-Content -Encoding utf8 writes a BOM (breaks mods.cfg / README); use ascii or [IO.File]::WriteAllLines.
+- Don't kill his game process (the auto-mode classifier blocks it); quit test games through the agent channel ("quit").
+
+TEST TOOLS (copied into Manual Combat\ManualCombat\tools\test\; they find each other by their own folder)
+- start.ps1: starts Meitou windowed on mctest with the agent channel (C:\Kenshi_Meitou\ctl) and the mod test channel, waits, pauses.
+- c.ps1 <agent command> (spawn-at, order attack, step n, combat-status --id, camera, screenshot <path>, quit...); mc.ps1 "<test line>".
+- Mod test channel lines: aim, attack [hold] [dir], release, reaim <dir>, block on/off [dir], dodge, target, swap, reload [off],
+  leave, move <forward|back|left|right|off>, report.
+- timed.ps1 -Mode block|attack|dodge -Before n: press n ticks before a blow lands. held.ps1, heldchamber.ps1, spam.ps1, walk.ps1,
+  cut.ps1, animal.ps1, xbwalk.ps1, wasdattack.ps1 (starving bandit mob), aggro.ps1, fists.ps1: scenario tests from this session.
+- bench.ps1 -Name x [-NoMod]: Meitou --play-bench on mctest (settle,idle,orbit,fight), hidden window. 0.9.30 vs mod off: identical
+  (4.0 ms median, ~230-240 fps) - the mod costs no measurable frame time.
+- Give items by record id: crossbow 66290-Newwworld.mod --equip, bolts 96000-Newwworld.mod 20 (give the crossbow first).
+  maxstats on a spawned bandit makes an even fight for Su (all 100). Starving bandit mob is near -45570,-2665 in mctest: teleport
+  onto the group (elsewhere there a teleport can leave Su under the ground).
+- Agent screenshots never show the mouse pointer; the game draws it outside saved pictures.

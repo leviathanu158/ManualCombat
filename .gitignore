@@ -11,3 +11,6 @@ Workshop/
 
 # separate mod with its own repo
 Radiant Quests/
+
+# Meitou working copy for upstream PRs (its own repo, github.com/leviathanu158/MeitouClient)
+MeitouClient-pr/

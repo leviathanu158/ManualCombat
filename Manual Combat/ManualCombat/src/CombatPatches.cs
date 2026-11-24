@@ -49,7 +49,7 @@ public static class CombatPatches
     static MethodInfo s_eff = null!, s_applyFire = null!, s_lineOfFire = null!;
     static FieldInfo s_flight = null!, s_flightList = null!, s_pShooter = null!, s_pTarget = null!, s_pId = null!, s_pPosition = null!, s_pDirection = null!;
     /// <summary>CombatSystem.MostAdvanced / BlowSide (the swing coming at a fighter, and its side), Ticks / PlayRate (a move's length).</summary>
-    static MethodInfo s_mostAdvanced = null!, s_blowSide = null!, s_ticks = null!, s_playRate = null!;
+    static MethodInfo s_ticks = null!, s_playRate = null!;
     /// <summary>CombatSystem.MovesCategory(Fighter, int): the weapon category whose moves a fighter uses.</summary>
     static MethodInfo s_movesCategory = null!;
     /// <summary>CombatSystem.Stagger(World, ref CombatSlot, int, CharacterCold, bool, int, ulong, bool): a hit reaction.</summary>
@@ -126,8 +126,6 @@ public static class CombatPatches
             s_pPosition = Need(AccessTools.Field(projectile, "Position"), "Projectile.Position", missing);
             s_pDirection = Need(AccessTools.Field(projectile, "Direction"), "Projectile.Direction", missing);
         }
-        s_mostAdvanced = Need(AccessTools.Method(cs, "MostAdvanced"), "CombatSystem.MostAdvanced", missing);
-        s_blowSide = Need(AccessTools.Method(cs, "BlowSide"), "CombatSystem.BlowSide", missing);
         s_ticks = Need(AccessTools.Method(cs, "Ticks"), "CombatSystem.Ticks", missing);
         s_playRate = Need(AccessTools.Method(cs, "PlayRate"), "CombatSystem.PlayRate", missing);
         if (Targets.Resolve() is { } gone) missing.Add(gone);
@@ -176,12 +174,35 @@ public static class CombatPatches
         s_chooseDefenceSwing = IndexOf(s_chooseDefence, "swing");
         s_startDefenceSwing = IndexOf(s_startDefence, "swing");
         if (s_stagger is not null && s_stagger.GetParameters().Length != 8) missing.Add("CombatSystem.Stagger with 8 parameters");
-        if (s_mostAdvanced is not null && s_mostAdvanced.GetParameters().Length != 5) missing.Add("CombatSystem.MostAdvanced with 5 parameters");
-        if (s_blowSide is not null && s_blowSide.GetParameters().Length != 3) missing.Add("CombatSystem.BlowSide with 3 parameters");
         if (s_ticks is not null && s_ticks.GetParameters().Length != 4) missing.Add("CombatSystem.Ticks with 4 parameters");
         if (s_playRate is not null && s_playRate.GetParameters().Length != 5) missing.Add("CombatSystem.PlayRate with 5 parameters");
+        if (missing.Count == 0)
+        {
+            // The ones called every tick as direct calls (a reflected Invoke builds an argument array and boxes each value on every call).
+            try
+            {
+                s_effFn = AccessTools.MethodDelegate<Func<CharacterCold, Meitou.Data.Gameplay.Bodies.StatsEnumerated, float>>(s_eff);
+                s_trainedFn = AccessTools.MethodDelegate<Func<CharacterCold, Meitou.Data.Gameplay.Bodies.StatsEnumerated, float>>(s_trained);
+                s_guardingFn = AccessTools.MethodDelegate<Func<CharacterCold, bool>>(s_guarding);
+                s_indoorsModFn = AccessTools.MethodDelegate<Func<World, int, Fighter, int>>(s_indoorsMod);
+                s_fitsFn = AccessTools.MethodDelegate<Func<CombatTechnique, int, bool>>(s_fits);
+                s_meleeDrawnFn = AccessTools.MethodDelegate<Func<Fighter, Meitou.Data.Gameplay.WeaponKinds>>(s_meleeDrawn);
+                s_movesCategoryFn = AccessTools.MethodDelegate<Func<CombatSystem, Fighter, int, int>>(s_movesCategory);
+            }
+            catch (Exception e)
+            {
+                missing.Add("direct calls into CombatSystem (" + e.GetType().Name + ": " + e.Message + ")");
+            }
+        }
         return missing;
     }
+
+    static Func<CharacterCold, Meitou.Data.Gameplay.Bodies.StatsEnumerated, float> s_effFn = null!, s_trainedFn = null!;
+    static Func<CharacterCold, bool> s_guardingFn = null!;
+    static Func<World, int, Fighter, int> s_indoorsModFn = null!;
+    static Func<CombatTechnique, int, bool> s_fitsFn = null!;
+    static Func<Fighter, Meitou.Data.Gameplay.WeaponKinds> s_meleeDrawnFn = null!;
+    static Func<CombatSystem, Fighter, int, int> s_movesCategoryFn = null!;
 
     /// <summary>Applies all the patches or none; returns one line per patch.</summary>
     public static List<string> Apply(Harmony h)
@@ -210,6 +231,13 @@ public static class CombatPatches
                 && techniqueOf.ReturnType == typeof(ValueTuple<int, float>) && techniqueOf.GetParameters().Any(p => p.Name == "id"))
             {
                 h.Patch(techniqueOf, postfix: Hook(nameof(TechniqueOfPostfix)));
+                if (AccessTools.Method(typeof(Meitou.Simulation.Movement.AnimationSystem), "BlendStep") is { } blend && blend.ReturnType == typeof(float)
+                    && blend.GetParameters() is { Length: > 0 } bp && bp[0].Name == "d")
+                {
+                    h.Patch(blend, postfix: Hook(nameof(BlendStepPostfix)));
+                    lines.Add("patched AnimationSystem.BlendStep (side switch morph)");
+                }
+                else lines.Add("side switch morph unavailable in this Meitou version (AnimationSystem.BlendStep)");
                 lines.Add("patched AnimationSystem.TechniqueOf (walking with the crossbow out)");
             }
             else lines.Add("walking animation with the crossbow out unavailable in this Meitou version (AnimationSystem.TechniqueOf)");
@@ -218,8 +246,6 @@ public static class CombatPatches
             lines.Add("patched CombatSystem.MayJoin / HasSlot (swing anytime)");
             h.Patch(s_reactionEnds, prefix: Hook(nameof(ReactionEndsPrefix)));
             lines.Add("patched CombatSystem.ReactionEnds (dodge anytime, held guard)");
-            h.Patch(s_playRate, postfix: Hook(nameof(PlayRatePostfix)));
-            lines.Add("patched CombatSystem.PlayRate (combos)");
             h.Patch(s_aim, prefix: Hook(nameof(AimPrefix)));
             h.Patch(s_reload, prefix: Hook(nameof(ReloadPrefix)));
             h.Patch(s_threat, prefix: Hook(nameof(ThreatPrefix)));
@@ -230,6 +256,7 @@ public static class CombatPatches
             lines.Add("patched CombatSystem.ApplyFire / LineOfFire (shots at the crosshair)");
             h.Patch(s_stagger, prefix: Hook(nameof(StaggerPrefix)), postfix: Hook(nameof(StaggerPostfix)));
             lines.Add("patched CombatSystem.Stagger (hyper armor)");
+            lines.Add(PatchAimedBolts(h));
         }
         catch
         {
@@ -264,7 +291,7 @@ public static class CombatPatches
     {
         if (!fighter.CanBlock) return -1;
         var all = s_techniques(combat);
-        int category = (int)s_movesCategory.Invoke(combat, [fighter, fighter.TechniqueCategory])!;
+        int category = s_movesCategoryFn(combat, fighter, fighter.TechniqueCategory);
         int pick = TechniqueChooser.ChooseReaction(all, category, prone, canBlock: true, side,
             blockChancePercent: 100, dodgeChancePercent: 0, chanceRoll: 0, pickRoll: 0.5f);
         return pick >= 0 && all[pick] is { IsBlock: true, IsDodge: false } ? pick : -1;
@@ -394,11 +421,33 @@ public static class CombatPatches
     /// with W A S D slid along in its aim pose. While the keys push, the pose is left out and the fight's own walk plays; it comes back when the
     /// character stands (a reload keeps counting meanwhile). From the simulation's own state (the footwork wanted), so it is the same everywhere.
     /// </summary>
+    // A side switch's morph (ManualCombatSystem.Morphing): the swing layers of the hand-fought character cross-fade over the Switch blend time
+    // instead of Meitou's 0.2 s. TechniqueOf runs for each character just before its layers are settled, on the same thread, so it marks whether
+    // the character being animated is morphing; AnimationSystem.BlendStep then gives its technique layers the slower fade.
+    [ThreadStatic] static bool t_morphing;
+    [ThreadStatic] static float t_morphRate;
+    static bool s_morphSeen;
+
+    static void BlendStepPostfix(Meitou.Data.Gameplay.AnimationDefinition d, ref float __result)
+    {
+        if (!t_morphing || !d.Technique) return;
+        __result = t_morphRate;
+        if (!s_morphSeen)
+        {
+            s_morphSeen = true;
+            ManualCombatMod.Log("side switch: the swing morph blend is in use");
+        }
+    }
+
     static void TechniqueOfPostfix(Meitou.Simulation.Movement.AnimationSystem __instance, World world, Meitou.Simulation.CharacterId id,
         ref ValueTuple<int, float> __result)
     {
         try
         {
+            var morph = ManualCombatSystem.For(world);
+            t_morphing = morph is not null && morph.Morphing && morph.Controls(world, id.Slot);
+            if (t_morphing) t_morphRate = 1 / MathF.Max(morph!.MorphSeconds, 0.05f);
+
             // The reload out of a fight (Meitou plays crossbow poses only in fights): the crossbow's own reload clip at the reload's progress, its
             // upper-body copy while walking.
             if (__result.Item1 < 0)
@@ -490,7 +539,7 @@ public static class CombatPatches
     public static (int Index, CombatTechnique Technique)? DodgeTechnique(CombatSystem combat, Fighter fighter, bool prone, float roll = 0.5f)
     {
         var all = s_techniques(combat);
-        int category = (int)s_movesCategory.Invoke(combat, [fighter, fighter.TechniqueCategory])!;
+        int category = s_movesCategoryFn(combat, fighter, fighter.TechniqueCategory);
         // Kenshi's "Dodge back fall" and "Dodge back fly" throw the dodger down: left out while another dodge serves (setting).
         CombatTechnique[] pool = ManualCombatMod.Settings.NoFallingDodges ? Upright(all) : all;
         int pick = Dodge(pool, category, prone, roll);
@@ -575,11 +624,48 @@ public static class CombatPatches
     /// </summary>
     public static (int Attacker, int Seq, int Blow, int Lands, int Side)? Incoming(CombatSystem combat, World world, int slot, int now)
     {
-        object swing = s_mostAdvanced.Invoke(combat, [world, slot, now, -1, true])!;
-        int attacker = (int)s_blowAttacker.GetValue(swing)!;
+        var (attacker, seq, blow, lands) = MostAdvanced(combat, world, slot, now, landing: true);
         if (attacker < 0) return null;
-        return (attacker, (int)s_blowSeq.GetValue(swing)!, (int)s_blowBlow.GetValue(swing)!, (int)s_blowLands.GetValue(swing)!,
-            (int)s_blowSide.Invoke(combat, [world, slot, swing])!);
+        return (attacker, seq, blow, lands, BlowSide(combat, world, slot, attacker, blow));
+    }
+
+    /// <summary>
+    /// The swing at <paramref name="slot"/> furthest on its way (CombatSystem.MostAdvanced, done here on the same state so the mod calls nothing
+    /// by reflection each tick): among the fighters whose target it is, within CombatTuning.ReactionScanRadius, swinging, with a blow to come, the
+    /// largest progress towards that blow (its clip share over the blow's strike point; 0 &lt; v &lt; 1, or up to its landing tick with
+    /// <paramref name="landing"/>); a tie keeps the lower slot. Attacker -1 with none.
+    /// </summary>
+    static (int Attacker, int Seq, int Blow, int Lands) MostAdvanced(CombatSystem combat, World world, int slot, int now, bool landing)
+    {
+        var read = s_read(combat);
+        var techniques = s_techniques(combat);
+        var prev = world.Characters.Previous;
+        if ((uint)slot >= (uint)prev.Length) return (-1, 0, 0, 0);
+        int generation = prev[slot].Generation;
+        var at = prev[slot].Position;
+        const float reach2 = CombatTuning.ReactionScanRadius * CombatTuning.ReactionScanRadius;
+        int best = -1, bestSeq = 0, bestBlow = 0, bestLands = 0;
+        float bestV = 0;
+        for (int c = 0; c < read.Length && c < prev.Length; c++)
+        {
+            if (c == slot) continue;
+            ref readonly var a = ref read[c];
+            if (a.TargetSlot != slot || a.TargetGeneration != generation || a.AttackTech < 0 || a.NextBlow == 0 || a.AttackTicks <= 0) continue;
+            if ((uint)a.AttackTech >= (uint)techniques.Length) continue;
+            float dx = prev[c].Position.X - at.X, dz = prev[c].Position.Z - at.Z;
+            if (dx * dx + dz * dz > reach2) continue;
+            float strike = techniques[a.AttackTech].StrikeProgress(a.NextBlow);
+            float clip = Math.Clamp((now - a.AttackStart) / (float)a.AttackTicks, 0, 1);
+            float v = strike > 0 ? clip / strike : 1;
+            if (v <= 0 || !landing && v >= 1) continue;
+            if (best >= 0 && v <= bestV) continue;
+            best = c;
+            bestV = v;
+            bestSeq = a.AttackSeq;
+            bestBlow = a.NextBlow;
+            bestLands = a.AttackStart + (int)MathF.Ceiling(strike * a.AttackTicks);
+        }
+        return (best, bestSeq, bestBlow, bestLands);
     }
 
     /// <summary>
@@ -594,7 +680,7 @@ public static class CombatPatches
         if (table.Cold(i) is not { Fighter: { } fighter, Medical: { } medical } cold) return -1;
         var read = s_read(combat);
         if ((uint)attacker >= (uint)read.Length) return -1;
-        bool guarding = (bool)s_guarding.Invoke(null, [cold])!;
+        bool guarding = s_guardingFn(cold);
         var constants = (CombatConstants)s_combatConstants.GetValue(combat)!;
 
         // A fighter that cannot block dodges: Kenshi's dodge chance from Martial Arts, slowed by load and bad legs (ChooseDefence's own formula).
@@ -605,8 +691,8 @@ public static class CombatPatches
             return DefenceFormulas.BlockChance(effective, read[attacker].AttackSkill, constants, 0, 95);
         }
         if (fighter.Weapon is not { } weapon) return -1;
-        float meleeDefence = (float)s_trained.Invoke(null, [cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.MeleeDefence])!;
-        int indoors = (int)s_indoorsMod.Invoke(null, [world, i, fighter])!;
+        float meleeDefence = s_trainedFn(cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.MeleeDefence);
+        int indoors = s_indoorsModFn(world, i, fighter);
         float d = DefenceFormulas.Defence(meleeDefence, weapon.Stats.DefenceMod, true, fighter.DefenceBonus + indoors, guarding);
         float block = DefenceFormulas.BlockChance(d, read[attacker].AttackSkill, constants);
         if (table.Cold(attacker)?.Fighter is { Unarmed: true, IsAnimal: false } && cold.Stats is { } stats)
@@ -631,10 +717,9 @@ public static class CombatPatches
     /// <summary>The side and attacker of the swing furthest on its way at fighter <paramref name="slot"/>; side 0 and attacker -1 with none.</summary>
     public static (int Side, int Attacker) IncomingSideFrom(CombatSystem combat, World world, int slot, int now)
     {
-        object swing = s_mostAdvanced.Invoke(combat, [world, slot, now, -1, false])!;
-        int attacker = (int)s_blowAttacker.GetValue(swing)!;
+        var (attacker, _, blow, _) = MostAdvanced(combat, world, slot, now, landing: false);
         if (attacker < 0) return (0, -1);
-        return ((int)s_blowSide.Invoke(combat, [world, slot, swing])!, attacker);
+        return (BlowSide(combat, world, slot, attacker, blow), attacker);
     }
 
     #region Attack
@@ -837,25 +922,6 @@ public static class CombatPatches
         }
     }
 
-    /// <summary>Combos: the swing the player asked for plays at its combo speed (riposte, chain).</summary>
-    /// <remarks>The JIT may inline this small method into StartAttack, which skips the patch: ManualCombatSystem then rescales the new swing itself
-    /// (it knows from <see cref="ManualCombatSystem.RateApplied"/> whether this ran).</remarks>
-    static void PlayRatePostfix(CombatSystem __instance, World world, int slot, bool attack, ref float __result)
-    {
-        if (!attack || !t_asked) return;
-        try
-        {
-            var mc = ManualCombatSystem.For(world);
-            if (mc is null || !mc.Controls(world, slot) || mc.NextSwingRate <= 1) return;
-            __result *= mc.NextSwingRate;
-            mc.RateApplied(s_write(__instance)[slot].AttackSeq);
-        }
-        catch (Exception e)
-        {
-            ManualCombatMod.LogException("PlayRate postfix", e);
-        }
-    }
-
     /// <summary>Manual crossbow: the aim steadies as usual, but the shot waits for the fire press.</summary>
     static bool AimPrefix(World world, int i, ref CombatSlot s, float dt)
     {
@@ -915,7 +981,7 @@ public static class CombatPatches
             s.RangedState = 0;
             s.ClearTime = 0;
             s.Steady = 0;
-            cold.DrawnWeapon = (Meitou.Data.Gameplay.WeaponKinds)s_meleeDrawn.Invoke(null, [fighter])!;
+            cold.DrawnWeapon = s_meleeDrawnFn(fighter);
         }
         catch (Exception e)
         {
@@ -924,7 +990,7 @@ public static class CombatPatches
     }
 
     /// <summary>An effective stat of <paramref name="cold"/> (Kenshi's own reading: injuries, encumbrance...).</summary>
-    public static float Stat(CharacterCold cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated stat) => (float)s_eff.Invoke(null, [cold, stat])!;
+    public static float Stat(CharacterCold cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated stat) => s_effFn(cold, stat);
 
     /// <summary>Hyper armor: a stagger on the hand-fought character may be shrugged off (poise, or the grace after a stagger).</summary>
     static bool StaggerPrefix(World world, ref CombatSlot dSlot, int d, CharacterCold dc, bool heavy, int now)
@@ -963,8 +1029,8 @@ public static class CombatPatches
     public static float CrossbowDeviation(CharacterCold cold)
     {
         if (cold is not { Fighter.Crossbow: { } x, Stats: not null, Medical: not null }) return 0;
-        float skill = (float)s_eff.Invoke(null, [cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.Crossbows])!;
-        float perception = (float)s_eff.Invoke(null, [cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.Perception])!;
+        float skill = s_effFn(cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.Crossbows);
+        float perception = s_effFn(cold, Meitou.Data.Gameplay.Bodies.StatsEnumerated.Perception);
         return RangedFormulas.Deviation(x.Stats.AccuracyDeviation, skill, perception);
     }
 
@@ -1044,6 +1110,113 @@ public static class CombatPatches
     /// tall, scaled with it; never the shooter) or the ground, whichever comes first within <paramref name="far"/>; null with nothing (the sky).
     /// From the world's own places and ground, so every machine aims the same.
     /// </summary>
+    // ---- Aimed bolts: the hand-fought character's bolt damages the body part it strikes. Kenshi picks a bolt's part at random by the parts' hit
+    // weights (BoltHit -> HitResolver.LandDetailed -> MedicalState.ChoosePart, hit direction 6), wherever the bolt met the body. BoltHit's prefix
+    // works out where along the body the bolt's line enters it (the upright body cylinder the crosshair uses) and which part is there; the part
+    // chooser (same thread, inside BoltHit) then takes that part. Armour, damage and the rest stay Kenshi's.
+
+    [ThreadStatic] static int t_boltPart;
+    [ThreadStatic] static bool t_boltAimed;
+    static FieldInfo? s_projShooter, s_projShooterGen, s_projPosition, s_projDirection;
+
+    static string PatchAimedBolts(Harmony h)
+    {
+        var proj = AccessTools.TypeByName("Meitou.Simulation.Combat.Projectile");
+        var boltHit = AccessTools.Method(typeof(CombatSystem), "BoltHit");
+        var choose = AccessTools.Method(typeof(Meitou.Simulation.Bodies.MedicalState), "ChoosePart");
+        s_projShooter = proj is null ? null : AccessTools.Field(proj, "Shooter");
+        s_projShooterGen = proj is null ? null : AccessTools.Field(proj, "ShooterGeneration");
+        s_projPosition = proj is null ? null : AccessTools.Field(proj, "Position");
+        s_projDirection = proj is null ? null : AccessTools.Field(proj, "Direction");
+        if (boltHit is null || choose is null || s_projShooter is null || s_projShooterGen is null || s_projPosition is null || s_projDirection is null
+            || choose.ReturnType != typeof(int) || IndexOf(boltHit, "p") < 0 || IndexOf(boltHit, "v") < 0)
+            return "aimed bolts unavailable in this Meitou version (CombatSystem.BoltHit / MedicalState.ChoosePart)";
+        h.Patch(boltHit, prefix: Hook(nameof(BoltHitPrefix)), postfix: Hook(nameof(BoltHitPostfix)));
+        h.Patch(choose, postfix: Hook(nameof(ChoosePartPostfix)));
+        return "patched CombatSystem.BoltHit / MedicalState.ChoosePart (bolts hit the part they strike)";
+    }
+
+    static void BoltHitPrefix(World world, int v, object[] __args)
+    {
+        t_boltPart = -1;
+        t_boltAimed = false;
+        try
+        {
+            var mc = ManualCombatSystem.For(world);
+            if (mc is null || !mc.ManualCrossbow || !ManualCombatMod.Settings.AimedBolts) return;
+            object p = __args[IndexOf(s_boltHit ??= AccessTools.Method(typeof(CombatSystem), "BoltHit"), "p")];
+            int shooter = (int)s_projShooter!.GetValue(p)!;
+            if (!mc.Controls(world, shooter) || (int)s_projShooterGen!.GetValue(p)! != world.Characters.Previous[shooter].Generation) return;
+            var at = (Vector3)s_projPosition!.GetValue(p)!;
+            var dir = (Vector3)s_projDirection!.GetValue(p)!;
+            t_boltPart = StruckPart(world, v, at, dir);
+            t_boltAimed = t_boltPart >= 0;
+            if (mc.Logging && world.Characters.Cold(v)?.Medical is { } struck)
+                mc.Detail($"bolt struck {world.Characters.Cold(v)?.Name}: {(t_boltPart >= 0 ? struck.Parts[t_boltPart].Template.Name : "no matching part (Kenshi picks)")}");
+        }
+        catch (Exception e)
+        {
+            ManualCombatMod.LogException("BoltHit prefix", e);
+        }
+    }
+    static MethodInfo? s_boltHit;
+
+    static void BoltHitPostfix()
+    {
+        t_boltPart = -1;
+        t_boltAimed = false;
+    }
+
+    static void ChoosePartPostfix(Meitou.Simulation.Bodies.MedicalState __instance, ref int __result)
+    {
+        if (!t_boltAimed) return;
+        t_boltAimed = false;   // once: the bolt's own pick
+        if ((uint)t_boltPart < (uint)__instance.Parts.Count) __result = t_boltPart;
+    }
+
+    /// <summary>
+    /// The body part of <paramref name="v"/> where a bolt at <paramref name="at"/> flying along <paramref name="dir"/> enters its body (the upright
+    /// cylinder round its feet, as the crosshair sees it): by height, the head (top), chest, stomach, an arm (out to the side at the chest and
+    /// stomach) or a leg (below the waist), left or right by the side it struck; -1 when the body has no such part (an animal, a robot), so
+    /// Kenshi picks.
+    /// </summary>
+    static int StruckPart(World world, int v, Vector3 at, Vector3 dir)
+    {
+        var prev = world.Characters.Previous;
+        if ((uint)v >= (uint)prev.Length || world.Characters.Cold(v) is not { Medical: { } medical } cold) return -1;
+        var feet = prev[v].Position;
+        float radius = cold.Race?.PathfindFootprintRadius ?? 3, height = BodyHeight * (medical.ScaleK > 0 ? medical.ScaleK : 1);
+
+        // where the line meets the cylinder's side (or passes nearest its axis, for a graze)
+        float ox = at.X - feet.X, oz = at.Z - feet.Z;
+        float a = dir.X * dir.X + dir.Z * dir.Z, b = 2 * (ox * dir.X + oz * dir.Z), c = ox * ox + oz * oz - radius * radius;
+        float t;
+        if (a < 1e-6f) t = 0;
+        else if (c <= 0) t = 0;   // already inside
+        else
+        {
+            float disc = b * b - 4 * a * c;
+            t = disc >= 0 ? (-b - MathF.Sqrt(disc)) / (2 * a) : -b / (2 * a);
+            if (t < 0) t = 0;
+        }
+        var hit = at + dir * t;
+        float up = Math.Clamp((hit.Y - feet.Y) / height, 0, 1);
+        // across the body: + to its right (its facing is (sin yaw, cos yaw) on X, Z)
+        float yaw = prev[v].Yaw;
+        float across = ((hit.X - feet.X) * MathF.Cos(yaw) - (hit.Z - feet.Z) * MathF.Sin(yaw)) / MathF.Max(radius, 0.1f);
+
+        string? want = up >= 0.82f ? "head"
+            : up >= 0.48f ? (MathF.Abs(across) > 0.65f ? (across > 0 ? "right arm" : "left arm") : up >= 0.62f ? "chest" : "stomach")
+            : across >= 0 ? "right leg" : "left leg";
+        for (int k = 0; k < medical.Parts.Count; k++)
+        {
+            var tpl = medical.Parts[k].Template;
+            string name = (tpl.Name.Length > 0 ? tpl.Name : tpl.StringId).ToLowerInvariant();
+            if (name.Contains(want) || tpl.StringId.ToLowerInvariant().Contains(want)) return k;
+        }
+        return -1;
+    }
+
     static float? CrosshairHit(World world, int shooter, Vector3 origin, Vector3 ray, float far)
     {
         var prev = world.Characters.Previous;
@@ -1110,7 +1283,7 @@ public static class CombatPatches
     static float Roll(long tick) => (float)((tick * 0.6180339887) % 1.0);
 
     static bool FitsWeapon(CombatTechnique t, int category) =>
-        category == (int)WeaponCategory.Unarmed || (bool)s_fits.Invoke(null, [t, category])!;
+        category == (int)WeaponCategory.Unarmed || s_fitsFn(t, category);
 
     #endregion
 
@@ -1219,7 +1392,7 @@ public static class CombatPatches
                 mc.Detail($"swing coming from {Dir.Name(side)}: guard beaten (the block roll lost)");
                 return false;
             }
-            int category = (int)s_movesCategory.Invoke(__instance, [fighter, fighter.TechniqueCategory])!;
+            int category = s_movesCategoryFn(__instance, fighter, fighter.TechniqueCategory);
             __result = TechniqueChooser.ChooseReaction(s_techniques(__instance), category, prone, fighter.CanBlock, guard,
                 blockChancePercent: 100, dodgeChancePercent: 100, chanceRoll: 0, pickRoll: 0.5f);
             mc.Detail($"swing coming from {Dir.Name(side)}: guard {Dir.Name(guard)}{(guard == side ? "" : " (wrong side)")}{(__result < 0 ? " - no guard move for this weapon" : "")}");
